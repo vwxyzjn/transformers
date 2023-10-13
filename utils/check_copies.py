@@ -370,7 +370,7 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
     return diffs
 
 
-def check_copies(overwrite: bool = False):
+def check_copies(overwrite: bool = False, file: str = None):
     """
     Check every file is copy-consistent with the original. Also check the model list in the main README and other
     READMEs are consistent.
@@ -378,10 +378,15 @@ def check_copies(overwrite: bool = False):
     Args:
         overwrite (`bool`, *optional*, defaults to `False`):
             Whether or not to overwrite the copies when they don't match.
+        file (`bool`, *optional*):
+            The path to a specific file to check and/or fix.
     """
-    all_files = glob.glob(os.path.join(TRANSFORMERS_PATH, "**/*.py"), recursive=True)
-    all_test_files = glob.glob(os.path.join(MODEL_TEST_PATH, "**/*.py"), recursive=True)
-    all_files = list(all_files) + list(all_test_files)
+    if file is None:
+        all_files = glob.glob(os.path.join(TRANSFORMERS_PATH, "**/*.py"), recursive=True)
+        all_test_files = glob.glob(os.path.join(MODEL_TEST_PATH, "**/*.py"), recursive=True)
+        all_files = list(all_files) + list(all_test_files)
+    else:
+        all_files = [file]
 
     diffs = []
     for filename in all_files:
@@ -729,9 +734,10 @@ def check_readme(overwrite: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--file", type=str, default=None, help="A specific file to check and/or fix")
     parser.add_argument("--fix_and_overwrite", action="store_true", help="Whether to fix inconsistencies.")
     args = parser.parse_args()
 
     check_readme(args.fix_and_overwrite)
-    check_copies(args.fix_and_overwrite)
+    check_copies(args.fix_and_overwrite, args.file)
     check_full_copies(args.fix_and_overwrite)

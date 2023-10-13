@@ -62,6 +62,16 @@ ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+# Copied from transformers.models.bert.modeling_bert.BertDummyModel with Bert->RobertaBert
+class RobertaBertDummyModel:
+    def __init__(self, a=1, b=2):
+        self.a = a
+        self.b = b
+
+    def forward(self, c):
+        return self.a + self.b + c
+
+
 class RobertaEmbeddings(nn.Module):
     """
     Same as BertEmbeddings with a tiny tweak for positional embeddings indexing.
