@@ -104,14 +104,23 @@ BERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
-
 class BertDummyModel:
     def __init__(self, a=1, b=2):
         self.a = a
         self.b = b
 
+    # Copied from transformers.models.gpt2.modeling_gpt2.GPT2DummyModel.forward
     def forward(self, c):
-        return self.a + self.b + c
+        return self.a * self.b + c
+
+
+class BertDummyModel2:
+    def __init__(self, a=1, b=2):
+        self.a = a
+        self.b = b
+
+    def forward(self, c):
+        return self.a * self.b * c
 
 
 def load_tf_weights_in_bert(model, config, tf_checkpoint_path):

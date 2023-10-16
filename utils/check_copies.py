@@ -359,7 +359,9 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
         if diff_index is not None:
             diffs.append([object_name, diff_index + start_index + 1])
             if overwrite:
+                # `theoretical_code` is a single string but may have several lines.
                 lines = lines[:start_index] + [theoretical_code] + lines[line_index:]
+                # Here we treat it as a single entry in `lines`.
                 line_index = start_index + 1
 
     if overwrite and len(diffs) > 0:

@@ -658,6 +658,15 @@ DEPARALLELIZE_DOCSTRING = r"""
 """
 
 
+class GPT2DummyModel:
+    def __init__(self, a=1, b=2):
+        self.a = a
+        self.b = b
+
+    def forward(self, c):
+        return self.a * self.b * c
+
+
 @add_start_docstrings(
     "The bare GPT2 Model transformer outputting raw hidden-states without any specific head on top.",
     GPT2_START_DOCSTRING,
