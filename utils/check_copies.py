@@ -133,6 +133,33 @@ def _should_continue(line: str, indent: str) -> bool:
     return line.startswith(indent) or len(line.strip()) == 0 or re.search(r"^\s*\)(\s*->.*:|:)\s*$", line) is not None
 
 
+def find_code_block(lines, start_index, indent):
+    """
+    Extract the (class/func) code block starting at `start_index` in a source code (defined by `lines`)
+
+    Args:
+        lines (`List[str]`):
+            The source code, represented by a list of lines.
+        start_index (`int`):
+            The start index of the (class/func) block to extract.
+        indent (`int`):
+            The indent of the (class/func) block body.
+
+    Returns:
+        `int`: The index of the block's ending line plus by 1.
+    """
+    indent = " " * indent
+    line_index = start_index + 1
+
+    while line_index < len(lines) and _should_continue(lines[line_index], indent):
+        line_index += 1
+    # Clean up empty lines at the end (if any).
+    while len(lines[line_index - 1]) <= 1:
+        line_index -= 1
+
+    return line_index
+
+
 def find_code_in_transformers(object_name: str, base_path: str = None) -> str:
     """
     Find and return the source code of an object.
@@ -183,21 +210,22 @@ def find_code_in_transformers(object_name: str, base_path: str = None) -> str:
             line_index < len(lines) and re.search(rf"^{indent}(class|def)\s+{name}(\(|\:)", lines[line_index]) is None
         ):
             line_index += 1
+        # next level in `parts`: increase `indent`
         indent += "    "
+        # the index of the first line in the (found) block
         line_index += 1
 
     if line_index >= len(lines):
         raise ValueError(f" {object_name} does not match any function or class in {module}.")
 
-    # We found the beginning of the class / func, now let's find the end (when the indent diminishes).
-    start_index = line_index - 1
-    while line_index < len(lines) and _should_continue(lines[line_index], indent):
-        line_index += 1
-    # Clean up empty lines at the end (if any).
-    while len(lines[line_index - 1]) <= 1:
-        line_index -= 1
+    # `indent` is already one level deeper than the (found) class/func block's declaration
 
-    code_lines = lines[start_index:line_index]
+    # We found the beginning of the class / func, now let's find the end (when the indent diminishes).
+    # `start_index` is the index of the class/func block's declaration
+    start_index = line_index - 1
+    end_index = find_code_block(lines, start_index, len(indent))
+
+    code_lines = lines[start_index:end_index]
     return "".join(code_lines)
 
 
@@ -315,8 +343,11 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
 
         base_path = TRANSFORMERS_PATH if not filename.startswith("tests") else MODEL_TEST_PATH
         theoretical_code = find_code_in_transformers(object_name, base_path=base_path)
+
         theoretical_indent = get_indent(theoretical_code)
 
+        # `start_index` is the index of the first line after `# Copied ...` (the func/class declaration)
+        # (`indent != theoretical_indent` doesn't seem to occur so far, not sure what's the case for.)
         start_index = line_index + 1 if indent == theoretical_indent else line_index
         line_index = start_index + 1
 
@@ -332,10 +363,12 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
             # There is a special pattern `# End copy` to stop early. It's not documented cause it shouldn't really be
             # used.
             should_continue = _should_continue(line, indent) and re.search(f"^{indent}# End copy", line) is None
+        # `line_index` is outside the block
         # Clean up empty lines at the end (if any).
         while len(lines[line_index - 1]) <= 1:
             line_index -= 1
 
+        # `line_index` is the index of the line after the block's ending line
         observed_code_lines = lines[start_index:line_index]
         observed_code = "".join(observed_code_lines)
 
