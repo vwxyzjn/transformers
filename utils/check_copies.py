@@ -160,6 +160,39 @@ def find_code_block(lines, start_index, indent):
     return line_index
 
 
+def split_code(lines, start_index, end_index, indent):
+    """
+    Extract the (class/func) code block starting at `start_index` in a source code (defined by `lines`)
+
+    Args:
+        lines (`List[str]`):
+            The source code, represented by a list of lines.
+        start_index (`int`):
+            The start index of the (class/func) block to extract.
+        indent (`int`):
+            The indent of the (class/func) block body.
+
+    Returns:
+        `int`: The index of the block's ending line plus by 1.
+    """
+    splits = []
+    prev_end_index, index = start_index, start_index
+
+    indent_str = " " * indent
+
+    while index < end_index:
+        if re.search(rf"^{indent_str}(class|def)\s+\S+(\(|\:)", lines[index]):
+            if index > prev_end_index:
+                splits.append((prev_end_index, index))
+            inner_end_index = find_code_block(lines, index, indent + 4)
+            splits.append((index, inner_end_index))
+            prev_end_index = inner_end_index
+            index = inner_end_index - 1
+        index += 1
+
+    return splits
+
+
 def find_code_in_transformers(object_name: str, base_path: str = None) -> str:
     """
     Find and return the source code of an object.
@@ -224,6 +257,8 @@ def find_code_in_transformers(object_name: str, base_path: str = None) -> str:
     # `start_index` is the index of the class/func block's declaration
     start_index = line_index - 1
     end_index = find_code_block(lines, start_index, len(indent))
+
+    # r = split_code(lines, start_index, end_index, len(indent))
 
     code_lines = lines[start_index:end_index]
     return "".join(code_lines)
