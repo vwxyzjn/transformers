@@ -70,6 +70,14 @@ class RobertaBertDummyModel:
         self.a = a
         self.b = b
 
+    # a = 3
+
+    # b = 4
+
+
+
+    # c = 5
+
     @add_code_sample_docstrings
     # Copied from transformers.models.gpt2.modeling_gpt2.GPT2DummyModel.forward
     def forward(self, c):
