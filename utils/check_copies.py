@@ -407,6 +407,15 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
         observed_code_lines = lines[start_index:line_index]
         observed_code = "".join(observed_code_lines)
 
+        # r = split_code(lines, start_index, line_index, len(indent))
+        # L = []
+        # for s, e in r:
+        #     l = "".join(lines[s:e])
+        #     L.append(l)
+        #     L.append("-" * 40 + "\n")
+        # print("-" * 40 + "\n" + "".join(L))
+        # breakpoint()
+
         # Before comparing, use the `replace_pattern` on the original code.
         if len(replace_pattern) > 0:
             patterns = replace_pattern.replace("with", "").split(",")
