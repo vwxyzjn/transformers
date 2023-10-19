@@ -160,7 +160,7 @@ def find_code_block(lines, start_index, indent):
     return line_index
 
 
-def split_code(lines, start_index, end_index, indent):
+def split_code(lines, start_index, end_index, indent, backtrace=False):
     """
     Extract the (class/func) code block starting at `start_index` in a source code (defined by `lines`)
 
@@ -182,10 +182,24 @@ def split_code(lines, start_index, end_index, indent):
 
     while index < end_index:
         if re.search(rf"^{indent_str}(class|def)\s+\S+(\(|\:)", lines[index]):
-            if index > prev_end_index:
-                splits.append((prev_end_index, index))
+
             inner_end_index = find_code_block(lines, index, indent + 4)
-            splits.append((index, inner_end_index))
+
+            start_index = index
+            if index > prev_end_index and backtrace:
+
+                idx = index - 1
+                for idx in range(index - 1, prev_end_index - 1, -1):
+                    if not (len(lines[idx].strip()) > 0 and lines[idx].startswith(indent_str) and not lines[idx].startswith(" " * (indent + 4))):
+                        break
+                idx += 1
+                if idx < index:
+                    start_index = idx
+
+            if start_index > prev_end_index:
+                splits.append((prev_end_index, start_index))
+            splits.append((start_index, inner_end_index))
+
             prev_end_index = inner_end_index
             index = inner_end_index - 1
         index += 1
@@ -407,14 +421,14 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
         observed_code_lines = lines[start_index:line_index]
         observed_code = "".join(observed_code_lines)
 
-        # r = split_code(lines, start_index, line_index, len(indent))
-        # L = []
-        # for s, e in r:
-        #     l = "".join(lines[s:e])
-        #     L.append(l)
-        #     L.append("-" * 40 + "\n")
-        # print("-" * 40 + "\n" + "".join(L))
-        # breakpoint()
+        r = split_code(lines, start_index, line_index, len(indent))
+        L = []
+        for s, e in r:
+            l = "".join(lines[s:e])
+            L.append(l)
+            L.append("-" * 40 + "\n")
+        print("-" * 40 + "\n" + "".join(L))
+        breakpoint()
 
         # Before comparing, use the `replace_pattern` on the original code.
         if len(replace_pattern) > 0:
