@@ -62,14 +62,18 @@ ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+@add_start_docstrings
 # Copied from transformers.models.bert.modeling_bert.BertDummyModel with Bert->RobertaBert
 class RobertaBertDummyModel:
+    # dummy init
     def __init__(self, a=1, b=2):
         self.a = a
         self.b = b
 
+    @add_code_sample_docstrings
+    # Copied from transformers.models.gpt2.modeling_gpt2.GPT2DummyModel.forward
     def forward(self, c):
-        return self.a + self.b + c
+        return self.a * self.b + c
 
 
 class RobertaEmbeddings(nn.Module):
