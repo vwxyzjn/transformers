@@ -197,9 +197,9 @@ def split_code(lines, start_index, end_index, indent, backtrace=False):
                     start_index = idx
 
             if start_index > prev_end_index:
-                splits.append((prev_end_index, start_index))
-            splits.append((start_index, inner_end_index))
+                splits.append((prev_end_index, start_index, False))
 
+            splits.append((start_index, inner_end_index, True))
             prev_end_index = inner_end_index
             index = inner_end_index - 1
         index += 1
@@ -421,9 +421,9 @@ def is_copy_consistent(filename: str, overwrite: bool = False) -> Optional[List[
         observed_code_lines = lines[start_index:line_index]
         observed_code = "".join(observed_code_lines)
 
-        r = split_code(lines, start_index, line_index, len(indent))
+        r = split_code(lines, start_index, line_index, len(indent), backtrace=True)
         L = []
-        for s, e in r:
+        for s, e, b in r:
             l = "".join(lines[s:e])
             L.append(l)
             L.append("-" * 40 + "\n")
