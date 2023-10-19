@@ -205,7 +205,6 @@ def split_code(lines, start_index, end_index, indent, backtrace=False):
         index += 1
 
     _splits = []
-    breakpoint()
     for s, e, b in splits:
         if b:
             _splits.append((s, e, b))
@@ -218,7 +217,6 @@ def split_code(lines, start_index, end_index, indent, backtrace=False):
                 _splits.append((start, index, b))
                 start = index
     splits = _splits
-    breakpoint()
 
     return splits
 
