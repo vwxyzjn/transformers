@@ -204,6 +204,22 @@ def split_code(lines, start_index, end_index, indent, backtrace=False):
             index = inner_end_index - 1
         index += 1
 
+    _splits = []
+    breakpoint()
+    for s, e, b in splits:
+        if b:
+            _splits.append((s, e, b))
+        else:
+            start, index = s, s
+            while index < e:
+                is_empty = len(lines[index].strip()) == 0
+                while index < e and (len(lines[index].strip()) == 0) == is_empty:
+                    index += 1
+                _splits.append((start, index, b))
+                start = index
+    splits = _splits
+    breakpoint()
+
     return splits
 
 
