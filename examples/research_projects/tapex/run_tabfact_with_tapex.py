@@ -292,7 +292,7 @@ def main():
         num_labels=num_labels,
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
-        token=True if model_args.use_auth_token else None,
+        token=model_args.token,
     )
     # load tapex tokenizer
     tokenizer = TapexTokenizer.from_pretrained(
@@ -300,7 +300,7 @@ def main():
         cache_dir=model_args.cache_dir,
         use_fast=model_args.use_fast_tokenizer,
         revision=model_args.model_revision,
-        token=True if model_args.use_auth_token else None,
+        token=model_args.token,
         add_prefix_space=True,
     )
     model = BartForSequenceClassification.from_pretrained(
@@ -309,7 +309,7 @@ def main():
         config=config,
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
-        token=True if model_args.use_auth_token else None,
+        token=model_args.token,
     )
 
     # Padding strategy

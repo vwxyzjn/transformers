@@ -288,7 +288,7 @@ def main():
     config_kwargs = {
         "cache_dir": model_args.cache_dir,
         "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
+        "use_auth_token": model_args.token,
     }
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
@@ -306,7 +306,7 @@ def main():
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
         "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
+        "use_auth_token": model_args.token,
     }
     if model_args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
@@ -325,7 +325,7 @@ def main():
             config=config,
             cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
-            token=True if model_args.use_auth_token else None,
+            token=model_args.token,
         )
     else:
         logger.info("Training new model from scratch")
