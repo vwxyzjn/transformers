@@ -15,10 +15,12 @@
 import unittest
 
 import numpy as np
+from huggingface_hub import AudioClassificationOutputElement
 
 from transformers import MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING, TF_MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING
 from transformers.pipelines import AudioClassificationPipeline, pipeline
 from transformers.testing_utils import (
+    compare_pipeline_output_to_hub_spec,
     is_pipeline_test,
     nested_simplify,
     require_tf,
@@ -35,8 +37,23 @@ class AudioClassificationPipelineTests(unittest.TestCase):
     model_mapping = MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING
     tf_model_mapping = TF_MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING
 
-    def get_test_pipeline(self, model, tokenizer, processor):
-        audio_classifier = AudioClassificationPipeline(model=model, feature_extractor=processor)
+    def get_test_pipeline(
+        self,
+        model,
+        tokenizer=None,
+        image_processor=None,
+        feature_extractor=None,
+        processor=None,
+        torch_dtype="float32",
+    ):
+        audio_classifier = AudioClassificationPipeline(
+            model=model,
+            tokenizer=tokenizer,
+            feature_extractor=feature_extractor,
+            image_processor=image_processor,
+            processor=processor,
+            torch_dtype=torch_dtype,
+        )
 
         # test with a raw waveform
         audio = np.zeros((34000,))
@@ -63,6 +80,9 @@ class AudioClassificationPipelineTests(unittest.TestCase):
         )
 
         self.run_torchaudio(audio_classifier)
+
+        for single_output in output:
+            compare_pipeline_output_to_hub_spec(single_output, AudioClassificationOutputElement)
 
     @require_torchaudio
     def run_torchaudio(self, audio_classifier):
@@ -115,7 +135,7 @@ class AudioClassificationPipelineTests(unittest.TestCase):
         model = "superb/wav2vec2-base-superb-ks"
 
         audio_classifier = pipeline("audio-classification", model=model)
-        dataset = datasets.load_dataset("anton-l/superb_dummy", "ks", split="test")
+        dataset = datasets.load_dataset("anton-l/superb_dummy", "ks", split="test", trust_remote_code=True)
 
         audio = np.array(dataset[3]["speech"], dtype=np.float32)
         output = audio_classifier(audio, top_k=4)
@@ -130,6 +150,6 @@ class AudioClassificationPipelineTests(unittest.TestCase):
         )
 
     @require_tf
-    @unittest.skip("Audio classification is not implemented for TF")
+    @unittest.skip(reason="Audio classification is not implemented for TF")
     def test_small_model_tf(self):
         pass

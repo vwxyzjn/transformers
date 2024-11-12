@@ -37,15 +37,14 @@ if is_torch_available():
     from torch import nn
 
     from transformers import (
-        REFORMER_PRETRAINED_MODEL_ARCHIVE_LIST,
         ReformerForMaskedLM,
         ReformerForQuestionAnswering,
         ReformerForSequenceClassification,
-        ReformerLayer,
         ReformerModel,
         ReformerModelWithLMHead,
         ReformerTokenizer,
     )
+    from transformers.models.reformer.modeling_reformer import ReformerLayer
 
 
 class ReformerModelTester:
@@ -54,6 +53,7 @@ class ReformerModelTester:
         parent,
         batch_size=13,
         seq_length=32,
+        text_seq_length=None,
         is_training=True,
         is_decoder=True,
         use_input_mask=True,
@@ -129,6 +129,7 @@ class ReformerModelTester:
         self.attn_layers = attn_layers
         self.pad_token_id = pad_token_id
         self.hash_seed = hash_seed
+        self.text_seq_length = text_seq_length or seq_length
 
         attn_chunk_length = local_attn_chunk_length if local_attn_chunk_length is not None else lsh_attn_chunk_length
         num_chunks_after = local_num_chunks_after if local_num_chunks_after is not None else lsh_num_chunks_after
@@ -209,9 +210,6 @@ class ReformerModelTester:
         )
 
     def create_and_check_reformer_model_with_lm_backward(self, config, input_ids, input_mask, choice_labels):
-        if not self.is_training:
-            return
-
         config.is_decoder = False
         config.lsh_num_chunks_after = 1
         model = ReformerForMaskedLM(config=config)
@@ -329,9 +327,6 @@ class ReformerModelTester:
         )
 
     def create_and_check_reformer_feed_backward_chunking(self, config, input_ids, input_mask, choice_labels):
-        if not self.is_training:
-            return
-
         # disable dropout
         config.hidden_dropout_prob = 0
         config.local_attention_probs_dropout_prob = 0
@@ -518,6 +513,8 @@ class ReformerTesterMixin:
         self.model_tester.create_and_check_reformer_model(*config_and_inputs)
 
     def test_reformer_lm_model_backward(self):
+        if not self.model_tester.is_training:
+            self.skipTest(reason="model_tester.is_training is set to False")
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_reformer_model_with_lm_backward(*config_and_inputs)
 
@@ -540,6 +537,8 @@ class ReformerTesterMixin:
         self.model_tester.create_and_check_reformer_layer_dropout_seed(*config_and_inputs, is_decoder=False)
 
     def test_reformer_chunking_backward_equality(self):
+        if not self.model_tester.is_training:
+            self.skipTest(reason="model_tester.is_training is set to False")
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_reformer_feed_backward_chunking(*config_and_inputs)
 
@@ -588,12 +587,12 @@ class ReformerTesterMixin:
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_reformer_for_sequence_classification(*config_and_inputs, is_decoder=False)
 
+    @unittest.skip(reason="Reformer cannot keep gradients in attentions or hidden states")
     def test_retain_grad_hidden_states_attentions(self):
-        # reformer cannot keep gradients in attentions or hidden states
         return
 
+    @unittest.skip(reason="Reformer cannot resize embeddings that easily")
     def test_resize_embeddings_untied(self):
-        # reformer cannot resize embeddings that easily
         return
 
 
@@ -611,14 +610,14 @@ class ReformerLocalAttnModelTest(ReformerTesterMixin, GenerationTesterMixin, Mod
     test_sequence_classification_problem_types = True
 
     def setUp(self):
-        self.model_tester = ReformerModelTester(self)
+        self.model_tester = ReformerModelTester(self, text_seq_length=16)
         self.config_tester = ConfigTester(self, config_class=ReformerConfig, hidden_size=37)
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in REFORMER_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = ReformerModelWithLMHead.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "google/reformer-crime-and-punishment"
+        model = ReformerModelWithLMHead.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
     def _check_attentions_for_generate(
         self, batch_size, attentions, min_length, max_length, config, use_cache=False, num_beam_groups=1
@@ -683,9 +682,19 @@ class ReformerLocalAttnModelTest(ReformerTesterMixin, GenerationTesterMixin, Mod
                 [expected_shape] * len(iter_hidden_states),
             )
 
-    @unittest.skip("The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
+    @unittest.skip(reason="The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
     def test_left_padding_compatibility(self):
         pass
+
+    def prepare_config_and_inputs_for_generate(self, *args, **kwargs):
+        # override because overwise we hit max possible seq length for model (4*8=32)
+        # decreasing the seq_length in tester causes errors for "training_tests", those need exactly max seq length
+        # NOTE: seq_length has to be multiple of 4, otherwise it fails for other tests
+        original_sequence_length = self.model_tester.seq_length
+        self.model_tester.seq_length = self.model_tester.text_seq_length
+        test_inputs = super().prepare_config_and_inputs_for_generate(*args, **kwargs)
+        self.model_tester.seq_length = original_sequence_length
+        return test_inputs
 
 
 @require_torch
@@ -716,10 +725,17 @@ class ReformerLSHAttnModelTest(
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
         if (
-            pipeline_test_casse_name == "QAPipelineTests"
+            pipeline_test_case_name == "QAPipelineTests"
             and tokenizer_name is not None
             and not tokenizer_name.endswith("Fast")
         ):
@@ -836,15 +852,15 @@ class ReformerLSHAttnModelTest(
                 [expected_shape] * len(iter_hidden_states),
             )
 
-    @unittest.skip("Fails because the sequence length is not a multiple of 4")
+    @unittest.skip(reason="Fails because the sequence length is not a multiple of 4")
     def test_problem_types(self):
         pass
 
-    @unittest.skip("Fails because the sequence length is not a multiple of 4")
+    @unittest.skip(reason="Fails because the sequence length is not a multiple of 4")
     def test_past_key_values_format(self):
         pass
 
-    @unittest.skip("The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
+    @unittest.skip(reason="The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
     def test_left_padding_compatibility(self):
         pass
 

@@ -25,8 +25,6 @@ rendered properly in your Markdown viewer.
 </a>
 </div>
 
-**DISCLAIMER:** If you see something strange, file a [Github Issue](https://github.com/huggingface/transformers/issues/new?assignees=&labels=&template=bug-report.md&title) and assign
-@patrickvonplaten
 
 ## Overview of MBart
 
@@ -85,7 +83,7 @@ keyword, and target text format passed with the `text_label` keyword argument.
 ## Overview of MBart-50
 
 MBart-50 was introduced in the [Multilingual Translation with Extensible Multilingual Pretraining and Finetuning](https://arxiv.org/abs/2008.00401) paper by Yuqing Tang, Chau Tran, Xian Li, Peng-Jen Chen, Naman Goyal, Vishrav
-Chaudhary, Jiatao Gu, Angela Fan. MBart-50 is created using the original *mbart-large-cc25* checkpoint by extendeding
+Chaudhary, Jiatao Gu, Angela Fan. MBart-50 is created using the original *mbart-large-cc25* checkpoint by extending
 its embedding layers with randomly initialized vectors for an extra set of 25 language tokens and then pretrained on 50
 languages.
 
@@ -186,6 +184,9 @@ tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
 [[autodoc]] MBart50TokenizerFast
 
+<frameworkcontent>
+<pt>
+
 ## MBartModel
 
 [[autodoc]] MBartModel
@@ -207,6 +208,9 @@ tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 [[autodoc]] MBartForCausalLM
     - forward
 
+</pt>
+<tf>
+
 ## TFMBartModel
 
 [[autodoc]] TFMBartModel
@@ -216,6 +220,9 @@ tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
 [[autodoc]] TFMBartForConditionalGeneration
     - call
+
+</tf>
+<jax>
 
 ## FlaxMBartModel
 
@@ -244,3 +251,6 @@ tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
     - __call__
     - encode
     - decode
+
+</jax>
+</frameworkcontent>

@@ -14,7 +14,6 @@
 # limitations under the License.
 """Feature extractor class for CLAP."""
 
-
 import copy
 from typing import Any, Dict, List, Optional, Union
 
@@ -242,10 +241,10 @@ class ClapFeatureExtractor(SequenceFeatureExtractor):
             if waveform.shape[0] < max_length:
                 if padding == "repeat":
                     n_repeat = int(max_length / len(waveform))
-                    waveform = np.stack(np.tile(waveform, n_repeat + 1))[:max_length]
+                    waveform = np.tile(waveform, n_repeat + 1)[:max_length]
                 if padding == "repeatpad":
                     n_repeat = int(max_length / len(waveform))
-                    waveform = np.stack(np.tile(waveform, n_repeat))
+                    waveform = np.tile(waveform, n_repeat)
                 waveform = np.pad(waveform, (0, max_length - waveform.shape[0]), mode="constant", constant_values=0)
 
             if truncation == "fusion":

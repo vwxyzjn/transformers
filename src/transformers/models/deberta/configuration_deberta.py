@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" DeBERTa model configuration"""
+"""DeBERTa model configuration"""
+
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Union
 
@@ -27,15 +28,6 @@ if TYPE_CHECKING:
 
 logger = logging.get_logger(__name__)
 
-DEBERTA_PRETRAINED_CONFIG_ARCHIVE_MAP = {
-    "microsoft/deberta-base": "https://huggingface.co/microsoft/deberta-base/resolve/main/config.json",
-    "microsoft/deberta-large": "https://huggingface.co/microsoft/deberta-large/resolve/main/config.json",
-    "microsoft/deberta-xlarge": "https://huggingface.co/microsoft/deberta-xlarge/resolve/main/config.json",
-    "microsoft/deberta-base-mnli": "https://huggingface.co/microsoft/deberta-base-mnli/resolve/main/config.json",
-    "microsoft/deberta-large-mnli": "https://huggingface.co/microsoft/deberta-large-mnli/resolve/main/config.json",
-    "microsoft/deberta-xlarge-mnli": "https://huggingface.co/microsoft/deberta-xlarge-mnli/resolve/main/config.json",
-}
-
 
 class DebertaConfig(PretrainedConfig):
     r"""
@@ -48,7 +40,7 @@ class DebertaConfig(PretrainedConfig):
     documentation from [`PretrainedConfig`] for more information.
 
     Arguments:
-        vocab_size (`int`, *optional*, defaults to 30522):
+        vocab_size (`int`, *optional*, defaults to 50265):
             Vocabulary size of the DeBERTa model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`DebertaModel`] or [`TFDebertaModel`].
         hidden_size (`int`, *optional*, defaults to 768):
@@ -70,7 +62,7 @@ class DebertaConfig(PretrainedConfig):
         max_position_embeddings (`int`, *optional*, defaults to 512):
             The maximum sequence length that this model might ever be used with. Typically set this to something large
             just in case (e.g., 512 or 1024 or 2048).
-        type_vocab_size (`int`, *optional*, defaults to 2):
+        type_vocab_size (`int`, *optional*, defaults to 0):
             The vocabulary size of the `token_type_ids` passed when calling [`DebertaModel`] or [`TFDebertaModel`].
         initializer_range (`float`, *optional*, defaults to 0.02):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
@@ -88,7 +80,7 @@ class DebertaConfig(PretrainedConfig):
         pos_att_type (`List[str]`, *optional*):
             The type of relative position attention, it can be a combination of `["p2c", "c2p"]`, e.g. `["p2c"]`,
             `["p2c", "c2p"]`.
-        layer_norm_eps (`float`, optional, defaults to 1e-12):
+        layer_norm_eps (`float`, *optional*, defaults to 1e-12):
             The epsilon used by the layer normalization layers.
 
     Example:
@@ -105,6 +97,7 @@ class DebertaConfig(PretrainedConfig):
     >>> # Accessing the model configuration
     >>> configuration = model.config
     ```"""
+
     model_type = "deberta"
 
     def __init__(
@@ -148,7 +141,7 @@ class DebertaConfig(PretrainedConfig):
         self.position_biased_input = position_biased_input
 
         # Backwards compatibility
-        if type(pos_att_type) == str:
+        if isinstance(pos_att_type, str):
             pos_att_type = [x.strip() for x in pos_att_type.lower().split("|")]
 
         self.pos_att_type = pos_att_type

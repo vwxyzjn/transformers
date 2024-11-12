@@ -37,7 +37,6 @@ if is_torch_available():
         XLNetLMHeadModel,
         XLNetModel,
     )
-    from transformers.models.xlnet.modeling_xlnet import XLNET_PRETRAINED_MODEL_ARCHIVE_LIST
 
 
 class XLNetModelTester:
@@ -544,9 +543,16 @@ class XLNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
+        if pipeline_test_case_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
             return True
 
         return False
@@ -613,8 +619,8 @@ class XLNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_xlnet_qa(*config_and_inputs)
 
+    @unittest.skip(reason="xlnet cannot keep gradients in attentions or hidden states")
     def test_retain_grad_hidden_states_attentions(self):
-        # xlnet cannot keep gradients in attentions or hidden states
         return
 
     # overwrite from test_modeling_common
@@ -647,7 +653,8 @@ class XLNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
                     seq_len = 1
                 else:
                     # for first item dummy PAD token is appended so need one more
-                    seq_len = (min_length + 1) if idx == 0 else min_length
+                    # else offset+dummy_token when using cache
+                    seq_len = (min_length + 1) if idx == 0 else 3
 
                 expected_shape = (batch_size * num_beam_groups, seq_len, config.hidden_size)
                 self.assertEqual(layer_hidden_states.shape, expected_shape)
@@ -666,8 +673,11 @@ class XLNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
                 tgt_len = min_length
 
                 # for first item dummy PAD token is appended so need one more
+                # every token after consists of offset+dummy_token length when using cache
                 if idx == 0:
                     tgt_len += 1
+                else:
+                    tgt_len = 3
 
                 src_len = min_length + idx + 1
 
@@ -685,16 +695,16 @@ class XLNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixi
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in XLNET_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = XLNetModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "xlnet/xlnet-base-cased"
+        model = XLNetModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
 
 @require_torch
 class XLNetModelLanguageGenerationTest(unittest.TestCase):
     @slow
     def test_lm_generate_xlnet_base_cased(self):
-        model = XLNetLMHeadModel.from_pretrained("xlnet-base-cased")
+        model = XLNetLMHeadModel.from_pretrained("xlnet/xlnet-base-cased")
         model.to(torch_device)
         # fmt: off
         input_ids = torch.tensor(

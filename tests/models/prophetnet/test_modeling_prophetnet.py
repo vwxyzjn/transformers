@@ -891,7 +891,6 @@ class ProphetNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTeste
     all_generative_model_classes = (ProphetNetForConditionalGeneration,) if is_torch_available() else ()
     pipeline_model_mapping = (
         {
-            "conversational": ProphetNetForConditionalGeneration,
             "feature-extraction": ProphetNetModel,
             "summarization": ProphetNetForConditionalGeneration,
             "text-generation": ProphetNetForCausalLM,
@@ -907,9 +906,16 @@ class ProphetNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTeste
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name == "TextGenerationPipelineTests":
+        if pipeline_test_case_name == "TextGenerationPipelineTests":
             # Get `ValueError: AttributeError: 'NoneType' object has no attribute 'new_ones'` or `AssertionError`.
             # `ProphetNetConfig` was never used in pipeline tests: cannot create a simple
             # tokenizer.
@@ -948,7 +954,7 @@ class ProphetNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTeste
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.check_prepare_lm_labels_via_shift_left(*config_and_inputs)
 
-    @unittest.skip("Flaky test with no simple resolution. TODO Fix me @patrickvonplaten")
+    @unittest.skip(reason="Flaky test with no simple resolution. TODO Fix me @patrickvonplaten")
     def test_decoder_model_generate(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_generate_with_past_key_value_states(*config_and_inputs)
@@ -1113,8 +1119,8 @@ class ProphetNetModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTeste
         self.assertIsNotNone(encoder_hidden_states.grad)
         self.assertIsNotNone(encoder_attentions.grad)
 
+    @unittest.skip(reason="Generating with head_masking has not been implemented for ProphetNet models yet.")
     def test_generate_with_head_masking(self):
-        """Generating with head_masking has not been implemented for ProphetNet models yet."""
         pass
 
 
@@ -1142,13 +1148,9 @@ class ProphetNetStandaloneDecoderModelTest(ModelTesterMixin, GenerationTesterMix
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_decoder_model_attention_mask_past(*config_and_inputs)
 
+    @unittest.skip(reason="Decoder cannot keep gradients")
     def test_retain_grad_hidden_states_attentions(self):
-        # decoder cannot keep gradients
         return
-
-    @unittest.skip("The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
-    def test_left_padding_compatibility(self):
-        pass
 
 
 @require_torch

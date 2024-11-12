@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch LUKE model. """
+"""Testing suite for the PyTorch LUKE model."""
+
 import unittest
 
 from transformers import LukeConfig, is_torch_available
@@ -38,7 +39,6 @@ if is_torch_available():
         LukeModel,
         LukeTokenizer,
     )
-    from transformers.models.luke.modeling_luke import LUKE_PRETRAINED_MODEL_ARCHIVE_LIST
 
 
 class LukeModelTester:
@@ -621,9 +621,16 @@ class LukeModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name in ["QAPipelineTests", "ZeroShotClassificationPipelineTests"]:
+        if pipeline_test_case_name in ["QAPipelineTests", "ZeroShotClassificationPipelineTests"]:
             return True
 
         return False
@@ -699,9 +706,9 @@ class LukeModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in LUKE_PRETRAINED_MODEL_ARCHIVE_LIST:
-            model = LukeModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "studio-ousia/luke-base"
+        model = LukeModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
     def test_for_masked_lm(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()

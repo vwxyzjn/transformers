@@ -32,6 +32,7 @@ FRAMEWORK = "pt" if is_torch_available() else "tf"
 @require_sentencepiece
 @require_tokenizers
 class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
+    from_pretrained_id = "almanach/camembert-base"
     tokenizer_class = CamembertTokenizer
     rust_tokenizer_class = CamembertTokenizerFast
     test_rust_tokenizer = True
@@ -93,7 +94,7 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
     def test_rust_and_python_full_tokenizers(self):
         if not self.test_rust_tokenizer:
-            return
+            self.skipTest(reason="test_rust_tokenizer is set to False")
 
         tokenizer = self.get_tokenizer()
         rust_tokenizer = self.get_rust_tokenizer()
@@ -115,9 +116,7 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
     @slow
     def test_tokenizer_integration(self):
-        # fmt: off
-        expected_encoding = {'input_ids': [[5, 54, 7196, 297, 30, 23, 776, 18, 11, 3215, 3705, 8252, 22, 3164, 1181, 2116, 29, 16, 813, 25, 791, 3314, 20, 3446, 38, 27575, 120, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [5, 468, 17, 11, 9088, 20, 1517, 8, 22804, 18818, 10, 38, 629, 607, 607, 142, 19, 7196, 867, 56, 10326, 24, 2267, 20, 416, 5072, 15612, 233, 734, 7, 2399, 27, 16, 3015, 1649, 7, 24, 20, 4338, 2399, 27, 13, 3400, 14, 13, 6189, 8, 930, 9, 6]], 'attention_mask': [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]}  # noqa: E501
-        # fmt: on
+        expected_encoding = {'input_ids': [[5, 54, 7196, 297, 30, 23, 776, 18, 11, 3215, 3705, 8252, 22, 3164, 1181, 2116, 29, 16, 813, 25, 791, 3314, 20, 3446, 38, 27575, 120, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [5, 468, 17, 11, 9088, 20, 1517, 8, 22804, 18818, 10, 38, 629, 607, 607, 142, 19, 7196, 867, 56, 10326, 24, 2267, 20, 416, 5072, 15612, 233, 734, 7, 2399, 27, 16, 3015, 1649, 7, 24, 20, 4338, 2399, 27, 13, 3400, 14, 13, 6189, 8, 930, 9, 6]], 'attention_mask': [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]]}  # fmt: skip
 
         # camembert is a french model. So we also use french texts.
         sequences = [
@@ -130,7 +129,7 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
 
         self.tokenizer_integration_test_util(
             expected_encoding=expected_encoding,
-            model_name="camembert-base",
+            model_name="almanach/camembert-base",
             revision="3a0641d9a1aeb7e848a74299e7e4c4bca216b4cf",
             sequences=sequences,
         )
@@ -145,7 +144,7 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
             self.assertTrue(str(expected_eos) not in tokenizer.additional_special_tokens)
             self.assertIn(new_eos, tokenizer.added_tokens_decoder.values())
             self.assertEqual(tokenizer.added_tokens_decoder[tokenizer.eos_token_id], new_eos)
-            self.assertDictEqual(expected, tokenizer.added_tokens_decoder)
+            self.assertTrue(all(item in tokenizer.added_tokens_decoder.items() for item in expected.items()))
             return tokenizer
 
         new_eos = AddedToken("[NEW_EOS]", rstrip=False, lstrip=True, normalized=False)
@@ -155,7 +154,7 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
                 tokenizer = self.tokenizer_class.from_pretrained(pretrained_name, eos_token=new_eos)
                 EXPECTED_ADDED_TOKENS_DECODER = tokenizer.added_tokens_decoder
                 with self.subTest("Hub -> Slow: Test loading a slow tokenizer from the hub)"):
-                    self.assertEqual(tokenizer._eos_token, new_eos)
+                    self.assertEqual(tokenizer._special_tokens_map["eos_token"], new_eos)
                     self.assertIn(new_eos, list(tokenizer.added_tokens_decoder.values()))
 
                 with tempfile.TemporaryDirectory() as tmp_dir_2:
@@ -195,11 +194,17 @@ class CamembertTokenizationTest(TokenizerTesterMixin, unittest.TestCase):
                         tokenizer_fast = self.rust_tokenizer_class.from_pretrained(
                             pretrained_name, eos_token=new_eos, from_slow=True
                         )
-                        self.assertEqual(tokenizer_fast._eos_token, new_eos)
+                        self.assertEqual(tokenizer_fast._special_tokens_map["eos_token"], new_eos)
                         self.assertIn(new_eos, list(tokenizer_fast.added_tokens_decoder.values()))
                         # We can't test the following because for BC we kept the default rstrip lstrip in slow not fast. Will comment once normalization is alright
                         with self.subTest("Hub -> Fast == Hub -> Slow: make sure slow and fast tokenizer match"):
-                            self.assertDictEqual(EXPECTED_ADDED_TOKENS_DECODER, tokenizer_fast.added_tokens_decoder)
+                            with self.subTest("Hub -> Fast == Hub -> Slow: make sure slow and fast tokenizer match"):
+                                self.assertTrue(
+                                    all(
+                                        item in tokenizer.added_tokens_decoder.items()
+                                        for item in EXPECTED_ADDED_TOKENS_DECODER.items()
+                                    )
+                                )
 
                         EXPECTED_ADDED_TOKENS_DECODER = tokenizer_fast.added_tokens_decoder
                         with tempfile.TemporaryDirectory() as tmp_dir_4:

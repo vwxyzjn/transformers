@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" AutoFeatureExtractor class."""
+"""AutoFeatureExtractor class."""
+
 import importlib
 import json
 import os
@@ -44,9 +45,11 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
         ("clap", "ClapFeatureExtractor"),
         ("clip", "CLIPFeatureExtractor"),
         ("clipseg", "ViTFeatureExtractor"),
+        ("clvp", "ClvpFeatureExtractor"),
         ("conditional_detr", "ConditionalDetrFeatureExtractor"),
         ("convnext", "ConvNextFeatureExtractor"),
         ("cvt", "ConvNextFeatureExtractor"),
+        ("dac", "DacFeatureExtractor"),
         ("data2vec-audio", "Wav2Vec2FeatureExtractor"),
         ("data2vec-vision", "BeitFeatureExtractor"),
         ("deformable_detr", "DeformableDetrFeatureExtractor"),
@@ -66,9 +69,11 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
         ("levit", "LevitFeatureExtractor"),
         ("maskformer", "MaskFormerFeatureExtractor"),
         ("mctct", "MCTCTFeatureExtractor"),
+        ("mimi", "EncodecFeatureExtractor"),
         ("mobilenet_v1", "MobileNetV1FeatureExtractor"),
         ("mobilenet_v2", "MobileNetV2FeatureExtractor"),
         ("mobilevit", "MobileViTFeatureExtractor"),
+        ("moshi", "EncodecFeatureExtractor"),
         ("nat", "ViTFeatureExtractor"),
         ("owlvit", "OwlViTFeatureExtractor"),
         ("perceiver", "PerceiverFeatureExtractor"),
@@ -77,6 +82,7 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
         ("regnet", "ConvNextFeatureExtractor"),
         ("resnet", "ConvNextFeatureExtractor"),
         ("seamless_m4t", "SeamlessM4TFeatureExtractor"),
+        ("seamless_m4t_v2", "SeamlessM4TFeatureExtractor"),
         ("segformer", "SegformerFeatureExtractor"),
         ("sew", "Wav2Vec2FeatureExtractor"),
         ("sew-d", "Wav2Vec2FeatureExtractor"),
@@ -90,6 +96,7 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
         ("tvlt", "TvltFeatureExtractor"),
         ("unispeech", "Wav2Vec2FeatureExtractor"),
         ("unispeech-sat", "Wav2Vec2FeatureExtractor"),
+        ("univnet", "UnivNetFeatureExtractor"),
         ("van", "ConvNextFeatureExtractor"),
         ("videomae", "VideoMAEFeatureExtractor"),
         ("vilt", "ViltFeatureExtractor"),
@@ -97,6 +104,7 @@ FEATURE_EXTRACTOR_MAPPING_NAMES = OrderedDict(
         ("vit_mae", "ViTFeatureExtractor"),
         ("vit_msn", "ViTFeatureExtractor"),
         ("wav2vec2", "Wav2Vec2FeatureExtractor"),
+        ("wav2vec2-bert", "Wav2Vec2FeatureExtractor"),
         ("wav2vec2-conformer", "Wav2Vec2FeatureExtractor"),
         ("wavlm", "Wav2Vec2FeatureExtractor"),
         ("whisper", "WhisperFeatureExtractor"),
@@ -136,7 +144,7 @@ def get_feature_extractor_config(
     pretrained_model_name_or_path: Union[str, os.PathLike],
     cache_dir: Optional[Union[str, os.PathLike]] = None,
     force_download: bool = False,
-    resume_download: bool = False,
+    resume_download: Optional[bool] = None,
     proxies: Optional[Dict[str, str]] = None,
     token: Optional[Union[bool, str]] = None,
     revision: Optional[str] = None,
@@ -151,8 +159,7 @@ def get_feature_extractor_config(
             This can be either:
 
             - a string, the *model id* of a pretrained model configuration hosted inside a model repo on
-              huggingface.co. Valid model ids can be located at the root-level, like `bert-base-uncased`, or namespaced
-              under a user or organization name, like `dbmdz/bert-base-german-cased`.
+              huggingface.co.
             - a path to a *directory* containing a configuration file saved using the
               [`~PreTrainedTokenizer.save_pretrained`] method, e.g., `./my_model_directory/`.
 
@@ -162,8 +169,9 @@ def get_feature_extractor_config(
         force_download (`bool`, *optional*, defaults to `False`):
             Whether or not to force to (re-)download the configuration files and override the cached versions if they
             exist.
-        resume_download (`bool`, *optional*, defaults to `False`):
-            Whether or not to delete incompletely received file. Attempts to resume the download if such a file exists.
+        resume_download:
+            Deprecated and ignored. All downloads are now resumed by default when possible.
+            Will be removed in v5 of Transformers.
         proxies (`Dict[str, str]`, *optional*):
             A dictionary of proxy servers to use by protocol or endpoint, e.g., `{'http': 'foo.bar:3128',
             'http://hostname': 'foo.bar:4012'}.` The proxies are used on each request.
@@ -190,14 +198,14 @@ def get_feature_extractor_config(
 
     ```python
     # Download configuration from huggingface.co and cache.
-    tokenizer_config = get_tokenizer_config("bert-base-uncased")
+    tokenizer_config = get_tokenizer_config("google-bert/bert-base-uncased")
     # This model does not have a tokenizer config so the result will be an empty dict.
-    tokenizer_config = get_tokenizer_config("xlm-roberta-base")
+    tokenizer_config = get_tokenizer_config("FacebookAI/xlm-roberta-base")
 
     # Save a pretrained tokenizer locally and you can reload its config
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
+    tokenizer = AutoTokenizer.from_pretrained("google-bert/bert-base-cased")
     tokenizer.save_pretrained("tokenizer-test")
     tokenizer_config = get_tokenizer_config("tokenizer-test")
     ```"""
@@ -263,8 +271,7 @@ class AutoFeatureExtractor:
                 This can be either:
 
                 - a string, the *model id* of a pretrained feature_extractor hosted inside a model repo on
-                  huggingface.co. Valid model ids can be located at the root-level, like `bert-base-uncased`, or
-                  namespaced under a user or organization name, like `dbmdz/bert-base-german-cased`.
+                  huggingface.co.
                 - a path to a *directory* containing a feature extractor file saved using the
                   [`~feature_extraction_utils.FeatureExtractionMixin.save_pretrained`] method, e.g.,
                   `./my_model_directory/`.
@@ -276,9 +283,9 @@ class AutoFeatureExtractor:
             force_download (`bool`, *optional*, defaults to `False`):
                 Whether or not to force to (re-)download the feature extractor files and override the cached versions
                 if they exist.
-            resume_download (`bool`, *optional*, defaults to `False`):
-                Whether or not to delete incompletely received file. Attempts to resume the download if such a file
-                exists.
+            resume_download:
+                Deprecated and ignored. All downloads are now resumed by default when possible.
+                Will be removed in v5 of Transformers.
             proxies (`Dict[str, str]`, *optional*):
                 A dictionary of proxy servers to use by protocol or endpoint, e.g., `{'http': 'foo.bar:3128',
                 'http://hostname': 'foo.bar:4012'}.` The proxies are used on each request.
@@ -345,7 +352,9 @@ class AutoFeatureExtractor:
         # If we don't find the feature extractor class in the feature extractor config, let's try the model config.
         if feature_extractor_class is None and feature_extractor_auto_map is None:
             if not isinstance(config, PretrainedConfig):
-                config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+                config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs
+                )
             # It could be in `config.feature_extractor_type``
             feature_extractor_class = getattr(config, "feature_extractor_type", None)
             if hasattr(config, "auto_map") and "AutoFeatureExtractor" in config.auto_map:

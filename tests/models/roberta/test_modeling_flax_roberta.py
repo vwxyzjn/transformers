@@ -78,6 +78,7 @@ class FlaxRobertaModelTester(unittest.TestCase):
         self.type_sequence_label_size = type_sequence_label_size
         self.initializer_range = initializer_range
         self.num_choices = num_choices
+        super().__init__()
 
     def prepare_config_and_inputs(self):
         input_ids = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
@@ -154,6 +155,6 @@ class FlaxRobertaModelTest(FlaxModelTesterMixin, unittest.TestCase):
     @slow
     def test_model_from_pretrained(self):
         for model_class_name in self.all_model_classes:
-            model = model_class_name.from_pretrained("roberta-base", from_pt=True)
+            model = model_class_name.from_pretrained("FacebookAI/roberta-base", from_pt=True)
             outputs = model(np.ones((1, 1)))
             self.assertIsNotNone(outputs)

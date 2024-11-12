@@ -23,6 +23,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN, gelu
+from ...generation import GenerationMixin
 from ...modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
     BaseModelOutputWithPoolingAndCrossAttentions,
@@ -40,19 +41,6 @@ from .configuration_xmod import XmodConfig
 
 
 logger = logging.get_logger(__name__)
-
-XMOD_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "facebook/xmod-base",
-    "facebook/xmod-large-prenorm",
-    "facebook/xmod-base-13-125k",
-    "facebook/xmod-base-30-125k",
-    "facebook/xmod-base-30-195k",
-    "facebook/xmod-base-60-125k",
-    "facebook/xmod-base-60-265k",
-    "facebook/xmod-base-75-125k",
-    "facebook/xmod-base-75-269k",
-    # See all X-MOD models at https://huggingface.co/models?filter=xmod
-]
 
 
 # Copied from transformers.models.roberta.modeling_roberta.RobertaEmbeddings with Roberta->Xmod
@@ -793,7 +781,7 @@ class XmodModel(XmodPreTrainedModel):
 
     """
 
-    # Copied from transformers.models.bert.modeling_bert.BertModel.__init__ with Bert->Xmod
+    # Copied from transformers.models.clap.modeling_clap.ClapTextModel.__init__ with ClapText->Xmod
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
@@ -969,7 +957,7 @@ class XmodModel(XmodPreTrainedModel):
     "X-MOD Model with a `language modeling` head on top for CLM fine-tuning.",
     XMOD_START_DOCSTRING,
 )
-class XmodForCausalLM(XmodPreTrainedModel):
+class XmodForCausalLM(XmodPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.decoder.weight", "lm_head.decoder.bias"]
 
     # Copied from transformers.models.roberta.modeling_roberta.RobertaForCausalLM.__init__ with Roberta->Xmod
@@ -1045,7 +1033,7 @@ class XmodForCausalLM(XmodPreTrainedModel):
         >>> from transformers import AutoTokenizer, XmodForCausalLM, AutoConfig
         >>> import torch
 
-        >>> tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-base")
+        >>> tokenizer = AutoTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
         >>> config = AutoConfig.from_pretrained("facebook/xmod-base")
         >>> config.is_decoder = True
         >>> model = XmodForCausalLM.from_pretrained("facebook/xmod-base", config=config)
@@ -1100,28 +1088,6 @@ class XmodForCausalLM(XmodPreTrainedModel):
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
         )
-
-    # Copied from transformers.models.roberta.modeling_roberta.RobertaForCausalLM.prepare_inputs_for_generation
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, attention_mask=None, **model_kwargs):
-        input_shape = input_ids.shape
-        # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
-        if attention_mask is None:
-            attention_mask = input_ids.new_ones(input_shape)
-
-        # cut decoder_input_ids if past_key_values is used
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
 
     # Copied from transformers.models.roberta.modeling_roberta.RobertaForCausalLM._reorder_cache
     def _reorder_cache(self, past_key_values, beam_idx):
@@ -1186,7 +1152,7 @@ class XmodForMaskedLM(XmodPreTrainedModel):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
             config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are ignored (masked), the
             loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
-        kwargs (`Dict[str, any]`, optional, defaults to *{}*):
+        kwargs (`Dict[str, any]`, *optional*, defaults to *{}*):
             Used to hide legacy arguments that have been deprecated.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict

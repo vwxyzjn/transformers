@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch GPTNeoX model. """
-
+"""Testing suite for the PyTorch GPTNeoX model."""
 
 import unittest
 
@@ -37,6 +36,11 @@ if is_torch_available():
         GPTNeoXForSequenceClassification,
         GPTNeoXForTokenClassification,
         GPTNeoXModel,
+    )
+    from transformers.models.gpt_neox.modeling_gpt_neox import (
+        GPTNeoXDynamicNTKScalingRotaryEmbedding,
+        GPTNeoXLinearScalingRotaryEmbedding,
+        GPTNeoXRotaryEmbedding,
     )
 
 
@@ -215,6 +219,36 @@ class GPTNeoXModelTester:
         # test that outputs are equal for slice
         self.parent.assertTrue(torch.allclose(output_from_past_slice, output_from_no_past_slice, atol=1e-3))
 
+    def create_and_check_cached_forward_with_and_without_attention_mask(self, config, input_ids, *args):
+        # Relevant issue: https://github.com/huggingface/transformers/issues/31943
+        model = GPTNeoXModel(config)
+        model.to(torch_device)
+        model.eval()
+
+        # We want this for SDPA, eager works with a `None` attention mask
+        assert (
+            model.config._attn_implementation == "sdpa"
+        ), "This test assumes the model to have the SDPA implementation for its attention calculations."
+
+        # Prepare cache and non_cache input, needs a full attention mask
+        cached_len = input_ids.shape[-1] // 2
+        input_mask = torch.ones(size=input_ids.size()).to(torch_device)
+        cache_inputs = {"input_ids": input_ids[:, :cached_len], "attention_mask": input_mask[:, :cached_len]}
+        non_cache_inputs = {"input_ids": input_ids[:, cached_len:], "attention_mask": input_mask}
+
+        # Cached forward once with the attention mask provided and the other time without it (which should assume full attention)
+        cache_outputs = model(**cache_inputs)
+        full_outputs_with_attention_mask = model(
+            **non_cache_inputs, past_key_values=cache_outputs.past_key_values
+        ).last_hidden_state
+        full_outputs_without_attention_mask = model(
+            non_cache_inputs["input_ids"], past_key_values=cache_outputs.past_key_values
+        ).last_hidden_state
+
+        self.parent.assertTrue(
+            torch.allclose(full_outputs_with_attention_mask, full_outputs_without_attention_mask, atol=1e-5)
+        )
+
     def prepare_config_and_inputs_for_common(self):
         config_and_inputs = self.prepare_config_and_inputs()
         config, input_ids, input_mask, token_labels = config_and_inputs
@@ -296,12 +330,17 @@ class GPTNeoXModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_for_token_classification(*config_and_inputs)
 
+    def test_cached_forward_with_and_without_attention_mask(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_cached_forward_with_and_without_attention_mask(*config_and_inputs)
+
     @unittest.skip(reason="Feed forward chunking is not implemented")
     def test_feed_forward_chunking(self):
         pass
 
     @parameterized.expand([("linear",), ("dynamic",)])
-    def test_model_rope_scaling(self, scaling_type):
+    # Copied from tests.models.llama.test_modeling_llama.LlamaModelTest.test_model_rope_scaling_from_config with Llama->GPTNeoX
+    def test_model_rope_scaling_from_config(self, scaling_type):
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
         short_input = ids_tensor([1, 10], config.vocab_size)
         long_input = ids_tensor([1, int(config.max_position_embeddings * 1.5)], config.vocab_size)
@@ -331,6 +370,70 @@ class GPTNeoXModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         # The output should be different for long inputs
         self.assertFalse(torch.allclose(original_long_output, scaled_long_output, atol=1e-5))
 
+    # Copied from tests.models.falcon.test_modeling_falcon.FalconModelTest.test_model_rope_scaling with Falcon->GPTNeoX, rope_theta->rotary_emb_base
+    def test_model_rope_scaling(self):
+        config, _ = self.model_tester.prepare_config_and_inputs_for_common()
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        head_dim = hidden_size // num_heads
+        scaling_factor = 10
+        short_input_length = 10
+        long_input_length = int(config.max_position_embeddings * 1.5)
+
+        # Inputs
+        x = torch.randn(1, dtype=torch.float32, device=torch_device)  # used exlusively to get the dtype and the device
+        position_ids_short = torch.arange(short_input_length, dtype=torch.long, device=torch_device)
+        position_ids_short = position_ids_short.unsqueeze(0)
+        position_ids_long = torch.arange(long_input_length, dtype=torch.long, device=torch_device)
+        position_ids_long = position_ids_long.unsqueeze(0)
+
+        # Sanity check original RoPE
+        original_rope = GPTNeoXRotaryEmbedding(
+            head_dim,
+            max_position_embeddings=config.max_position_embeddings,
+            base=config.rotary_emb_base,
+        ).to(torch_device)
+        original_cos_short, original_sin_short = original_rope(x, position_ids_short)
+        original_cos_long, original_sin_long = original_rope(x, position_ids_long)
+        torch.testing.assert_close(original_cos_short, original_cos_long[:, :short_input_length, :])
+        torch.testing.assert_close(original_sin_short, original_sin_long[:, :short_input_length, :])
+
+        # Sanity check linear RoPE scaling
+        # New position "x" should match original position with index "x/scaling_factor"
+        linear_scaling_rope = GPTNeoXLinearScalingRotaryEmbedding(
+            head_dim,
+            max_position_embeddings=config.max_position_embeddings,
+            base=config.rotary_emb_base,
+            scaling_factor=scaling_factor,
+        ).to(torch_device)
+        linear_cos_short, linear_sin_short = linear_scaling_rope(x, position_ids_short)
+        linear_cos_long, linear_sin_long = linear_scaling_rope(x, position_ids_long)
+        torch.testing.assert_close(linear_cos_short, linear_cos_long[:, :short_input_length, :])
+        torch.testing.assert_close(linear_sin_short, linear_sin_long[:, :short_input_length, :])
+        for new_position in range(0, long_input_length, scaling_factor):
+            original_position = int(new_position // scaling_factor)
+            torch.testing.assert_close(linear_cos_long[:, new_position, :], original_cos_long[:, original_position, :])
+            torch.testing.assert_close(linear_sin_long[:, new_position, :], original_sin_long[:, original_position, :])
+
+        # Sanity check Dynamic NTK RoPE scaling
+        # Scaling should only be observed after a long input is fed. We can observe that the frequencies increase
+        # with scaling_factor (or that `inv_freq` decreases)
+        ntk_scaling_rope = GPTNeoXDynamicNTKScalingRotaryEmbedding(
+            head_dim,
+            max_position_embeddings=config.max_position_embeddings,
+            base=config.rotary_emb_base,
+            scaling_factor=scaling_factor,
+        ).to(torch_device)
+        ntk_cos_short, ntk_sin_short = ntk_scaling_rope(x, position_ids_short)
+        ntk_cos_long, ntk_sin_long = ntk_scaling_rope(x, position_ids_long)
+        torch.testing.assert_close(ntk_cos_short, original_cos_short)
+        torch.testing.assert_close(ntk_sin_short, original_sin_short)
+        with self.assertRaises(AssertionError):
+            torch.testing.assert_close(ntk_cos_long, original_cos_long)
+        with self.assertRaises(AssertionError):
+            torch.testing.assert_close(ntk_sin_long, original_sin_long)
+        self.assertTrue((ntk_scaling_rope.inv_freq <= original_rope.inv_freq).all())
+
 
 @require_torch
 class GPTNeoXLanguageGenerationTest(unittest.TestCase):
@@ -355,3 +458,13 @@ class GPTNeoXLanguageGenerationTest(unittest.TestCase):
             output_str = tokenizer.batch_decode(output_ids)[0]
 
             self.assertEqual(output_str, expected_output)
+
+    def pythia_integration_test(self):
+        model_name_or_path = "EleutherAI/pythia-70m"
+        model = GPTNeoXForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16).to(torch_device)
+        EXPECTED_LOGITS = torch.tensor([1069.0000,  228.7500, 1072.0000, 1072.0000, 1069.0000, 1068.0000, 1068.0000, 1071.0000, 1071.0000, 1071.0000, 1073.0000, 1070.0000, 1071.0000, 1075.0000, 1073.0000, 1075.0000, 1074.0000, 1069.0000, 1072.0000, 1071.0000, 1071.0000, 1071.0000, 1070.0000, 1069.0000, 1069.0000, 1069.0000, 1070.0000, 1075.0000, 1073.0000, 1074.0000])  # fmt: skip
+        input_ids = [29, 93, 303, 64, 5478, 49651, 10394, 187, 34, 12939, 875]
+        # alternative: tokenizer('<|im_start|>system\nA chat between')
+        input_ids = torch.as_tensor(input_ids)[None].to(torch_device)
+        outputs = model(input_ids)["logits"][:, -1][0, :30]
+        self.assertTrue(torch.allclose(EXPECTED_LOGITS, outputs, atol=1e-5))

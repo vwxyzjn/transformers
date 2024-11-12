@@ -47,23 +47,23 @@ model published after it. Our best model achieves state-of-the-art results on GL
 highlight the importance of previously overlooked design choices, and raise questions about the source of recently
 reported improvements. We release our models and code.*
 
-Tips:
-
-- This implementation is the same as [`BertModel`] with a tiny embeddings tweak as well as a setup
-  for Roberta pretrained models.
-- RoBERTa has the same architecture as BERT, but uses a byte-level BPE as a tokenizer (same as GPT-2) and uses a
-  different pretraining scheme.
-- RoBERTa doesn't have `token_type_ids`, you don't need to indicate which token belongs to which segment. Just
-  separate your segments with the separation token `tokenizer.sep_token` (or `</s>`)
-- Same as BERT with better pretraining tricks:
-
-    * dynamic masking: tokens are masked differently at each epoch, whereas BERT does it once and for all
-    * together to reach 512 tokens (so the sentences are in an order than may span several documents)
-    * train with larger batches
-    * use BPE with bytes as a subunit and not characters (because of unicode characters)
-- [CamemBERT](camembert) is a wrapper around RoBERTa. Refer to this page for usage examples.
-
 This model was contributed by [julien-c](https://huggingface.co/julien-c). The original code can be found [here](https://github.com/pytorch/fairseq/tree/master/examples/roberta).
+
+## Usage tips
+
+- This implementation is the same as [`BertModel`] with a minor tweak to the embeddings, as well as a setup
+  for RoBERTa pretrained models.
+- RoBERTa has the same architecture as BERT but uses a byte-level BPE as a tokenizer (same as GPT-2) and uses a
+  different pretraining scheme.
+- RoBERTa doesn't have `token_type_ids`, so you don't need to indicate which token belongs to which segment. Just
+  separate your segments with the separation token `tokenizer.sep_token` (or `</s>`).
+- RoBERTa is similar to BERT but with better pretraining techniques:
+
+    * Dynamic masking: tokens are masked differently at each epoch, whereas BERT does it once and for all.
+    * Sentence packing: Sentences are packed together to reach 512 tokens (so the sentences are in an order that may span several documents).
+    * Larger batches: Training uses larger batches.
+    * Byte-level BPE vocabulary: Uses BPE with bytes as a subunit instead of characters, accommodating Unicode characters.
+- [CamemBERT](camembert) is a wrapper around RoBERTa. Refer to its model page for usage examples.
 
 ## Resources
 
@@ -127,6 +127,9 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 [[autodoc]] RobertaTokenizerFast
     - build_inputs_with_special_tokens
 
+<frameworkcontent>
+<pt>
+
 ## RobertaModel
 
 [[autodoc]] RobertaModel
@@ -161,6 +164,9 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 
 [[autodoc]] RobertaForQuestionAnswering
     - forward
+
+</pt>
+<tf>
 
 ## TFRobertaModel
 
@@ -197,6 +203,9 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 [[autodoc]] TFRobertaForQuestionAnswering
     - call
 
+</tf>
+<jax>
+
 ## FlaxRobertaModel
 
 [[autodoc]] FlaxRobertaModel
@@ -231,3 +240,6 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 
 [[autodoc]] FlaxRobertaForQuestionAnswering
     - __call__
+
+</jax>
+</frameworkcontent>

@@ -14,14 +14,13 @@
 # limitations under the License.
 """Convert DPT checkpoints from the original repository. URL: https://github.com/isl-org/DPT"""
 
-
 import argparse
 import json
 from pathlib import Path
 
 import requests
 import torch
-from huggingface_hub import cached_download, hf_hub_url
+from huggingface_hub import hf_hub_download
 from PIL import Image
 
 from transformers import DPTConfig, DPTForDepthEstimation, DPTForSemanticSegmentation, DPTImageProcessor
@@ -50,7 +49,7 @@ def get_dpt_config(checkpoint_url):
         config.num_labels = 150
         repo_id = "huggingface/label-files"
         filename = "ade20k-id2label.json"
-        id2label = json.load(open(cached_download(hf_hub_url(repo_id, filename, repo_type="dataset")), "r"))
+        id2label = json.loads(Path(hf_hub_download(repo_id, filename, repo_type="dataset")).read_text())
         id2label = {int(k): v for k, v in id2label.items()}
         config.id2label = id2label
         config.label2id = {v: k for k, v in id2label.items()}
@@ -229,12 +228,14 @@ def convert_dpt_checkpoint(checkpoint_url, pytorch_dump_folder_path, push_to_hub
         if "ade" in checkpoint_url
         else torch.allclose(outputs[0, :3, :3], expected_slice)
     )
+    print("Looks ok!")
 
-    Path(pytorch_dump_folder_path).mkdir(exist_ok=True)
-    print(f"Saving model to {pytorch_dump_folder_path}")
-    model.save_pretrained(pytorch_dump_folder_path)
-    print(f"Saving image processor to {pytorch_dump_folder_path}")
-    image_processor.save_pretrained(pytorch_dump_folder_path)
+    if pytorch_dump_folder_path is not None:
+        Path(pytorch_dump_folder_path).mkdir(exist_ok=True)
+        print(f"Saving model to {pytorch_dump_folder_path}")
+        model.save_pretrained(pytorch_dump_folder_path)
+        print(f"Saving image processor to {pytorch_dump_folder_path}")
+        image_processor.save_pretrained(pytorch_dump_folder_path)
 
     if push_to_hub:
         print("Pushing model to hub...")
@@ -265,7 +266,7 @@ if __name__ == "__main__":
         "--pytorch_dump_folder_path",
         default=None,
         type=str,
-        required=True,
+        required=False,
         help="Path to the output PyTorch model directory.",
     )
     parser.add_argument(
@@ -276,6 +277,7 @@ if __name__ == "__main__":
         "--model_name",
         default="dpt-large",
         type=str,
+        required=False,
         help="Name of the model, in case you're pushing to the hub.",
     )
 

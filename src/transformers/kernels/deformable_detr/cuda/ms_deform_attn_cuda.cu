@@ -28,6 +28,8 @@ at::Tensor ms_deform_attn_cuda_forward(
     const at::Tensor &attn_weight,
     const int im2col_step)
 {
+    at::DeviceGuard guard(value.device());
+
     AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(spatial_shapes.is_contiguous(), "spatial_shapes tensor has to be contiguous");
     AT_ASSERTM(level_start_index.is_contiguous(), "level_start_index tensor has to be contiguous");
@@ -64,7 +66,7 @@ at::Tensor ms_deform_attn_cuda_forward(
     for (int n = 0; n < batch/im2col_step_; ++n)
     {
         auto columns = output_n.select(0, n);
-        AT_DISPATCH_FLOATING_TYPES(value.type(), "ms_deform_attn_forward_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, value.type(), "ms_deform_attn_forward_cuda", ([&] {
             ms_deformable_im2col_cuda(at::cuda::getCurrentCUDAStream(),
                 value.data<scalar_t>() + n * im2col_step_ * per_value_size,
                 spatial_shapes.data<int64_t>(),
@@ -92,6 +94,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     const at::Tensor &grad_output,
     const int im2col_step)
 {
+    at::DeviceGuard guard(value.device());
 
     AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(spatial_shapes.is_contiguous(), "spatial_shapes tensor has to be contiguous");
@@ -134,7 +137,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     for (int n = 0; n < batch/im2col_step_; ++n)
     {
         auto grad_output_g = grad_output_n.select(0, n);
-        AT_DISPATCH_FLOATING_TYPES(value.type(), "ms_deform_attn_backward_cuda", ([&] {
+        AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, value.type(), "ms_deform_attn_backward_cuda", ([&] {
             ms_deformable_col2im_cuda(at::cuda::getCurrentCUDAStream(),
                                     grad_output_g.data<scalar_t>(),
                                     value.data<scalar_t>() + n * im2col_step_ * per_value_size,
