@@ -14,6 +14,7 @@ from ..olmo.modeling_olmo import (
     OlmoDecoderLayer,
     OlmoFlashAttention2,
     OlmoForCausalLM,
+    OlmoForSequenceClassification,
     OlmoModel,
     OlmoSdpaAttention,
     apply_rotary_pos_emb,
@@ -471,6 +472,12 @@ class Olmo1124Model(OlmoModel):
 
 # The heads now only need to redefine the model inside to the correct `RobertaModel`
 class Olmo1124ForCausalLM(OlmoForCausalLM):
+    def __init__(self, config: Olmo1124Config):
+        super().__init__(config)
+        self.model = Olmo1124Model(config)
+
+
+class Olmo1124ForSequenceClassification(OlmoForSequenceClassification):
     def __init__(self, config: Olmo1124Config):
         super().__init__(config)
         self.model = Olmo1124Model(config)
