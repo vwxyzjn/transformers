@@ -36,8 +36,9 @@ from ...image_utils import (
     make_list_of_images,
     to_numpy_array,
     valid_images,
+    validate_preprocess_arguments,
 )
-from ...utils import TensorType, is_vision_available, logging
+from ...utils import TensorType, filter_out_non_signature_kwargs, is_vision_available, logging
 
 
 logger = logging.get_logger(__name__)
@@ -160,6 +161,7 @@ class ChineseCLIPImageProcessor(BaseImageProcessor):
             **kwargs,
         )
 
+    @filter_out_non_signature_kwargs()
     def preprocess(
         self,
         images: ImageInput,
@@ -177,7 +179,6 @@ class ChineseCLIPImageProcessor(BaseImageProcessor):
         return_tensors: Optional[Union[str, TensorType]] = None,
         data_format: Optional[ChannelDimension] = ChannelDimension.FIRST,
         input_data_format: Optional[Union[str, ChannelDimension]] = None,
-        **kwargs,
     ) -> PIL.Image.Image:
         """
         Preprocess an image or batch of images.
@@ -230,6 +231,7 @@ class ChineseCLIPImageProcessor(BaseImageProcessor):
                 - `"channels_last"` or `ChannelDimension.LAST`: image in (height, width, num_channels) format.
                 - `"none"` or `ChannelDimension.NONE`: image in (height, width) format.
         """
+
         do_resize = do_resize if do_resize is not None else self.do_resize
         size = size if size is not None else self.size
         size = get_size_dict(size, default_to_square=False)
@@ -251,20 +253,18 @@ class ChineseCLIPImageProcessor(BaseImageProcessor):
                 "Invalid image type. Must be of type PIL.Image.Image, numpy.ndarray, "
                 "torch.Tensor, tf.Tensor or jax.ndarray."
             )
-
-        if do_resize and size is None:
-            raise ValueError("Size must be specified if do_resize is True.")
-
-        if do_center_crop and crop_size is None:
-            raise ValueError("Crop size must be specified if do_center_crop is True.")
-
-        if do_rescale and rescale_factor is None:
-            raise ValueError("Rescale factor must be specified if do_rescale is True.")
-
-        if do_normalize and (image_mean is None or image_std is None):
-            raise ValueError("Image mean and std must be specified if do_normalize is True.")
-
-        # PIL RGBA images are converted to RGB
+        validate_preprocess_arguments(
+            do_rescale=do_rescale,
+            rescale_factor=rescale_factor,
+            do_normalize=do_normalize,
+            image_mean=image_mean,
+            image_std=image_std,
+            do_center_crop=do_center_crop,
+            crop_size=crop_size,
+            do_resize=do_resize,
+            size=size,
+            resample=resample,
+        )
         if do_convert_rgb:
             images = [convert_to_rgb(image) for image in images]
 
@@ -281,31 +281,26 @@ class ChineseCLIPImageProcessor(BaseImageProcessor):
             # We assume that all images have the same channel dimension format.
             input_data_format = infer_channel_dimension_format(images[0])
 
-        if do_resize:
-            images = [
-                self.resize(image=image, size=size, resample=resample, input_data_format=input_data_format)
-                for image in images
-            ]
+        all_images = []
+        for image in images:
+            if do_resize:
+                image = self.resize(image=image, size=size, resample=resample, input_data_format=input_data_format)
 
-        if do_center_crop:
-            images = [
-                self.center_crop(image=image, size=crop_size, input_data_format=input_data_format) for image in images
-            ]
+            if do_center_crop:
+                image = self.center_crop(image=image, size=crop_size, input_data_format=input_data_format)
 
-        if do_rescale:
-            images = [
-                self.rescale(image=image, scale=rescale_factor, input_data_format=input_data_format)
-                for image in images
-            ]
+            if do_rescale:
+                image = self.rescale(image=image, scale=rescale_factor, input_data_format=input_data_format)
 
-        if do_normalize:
-            images = [
-                self.normalize(image=image, mean=image_mean, std=image_std, input_data_format=input_data_format)
-                for image in images
-            ]
+            if do_normalize:
+                image = self.normalize(
+                    image=image, mean=image_mean, std=image_std, input_data_format=input_data_format
+                )
 
+            all_images.append(image)
         images = [
-            to_channel_dimension_format(image, data_format, input_channel_dim=input_data_format) for image in images
+            to_channel_dimension_format(image, data_format, input_channel_dim=input_data_format)
+            for image in all_images
         ]
 
         data = {"pixel_values": images}

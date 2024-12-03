@@ -12,10 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch SpeechT5 model."""
+"""PyTorch SpeechT5 model."""
 
 import math
-import warnings
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -26,6 +25,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, L1Loss
 
 from ...activations import ACT2FN
 from ...integrations.deepspeed import is_deepspeed_zero3_enabled
+from ...integrations.fsdp import is_fsdp_managed_module
 from ...modeling_attn_mask_utils import _prepare_4d_attention_mask, _prepare_4d_causal_attention_mask
 from ...modeling_outputs import (
     BaseModelOutput,
@@ -48,14 +48,6 @@ _HIDDEN_STATES_START_POSITION = 1
 _CONFIG_FOR_DOC = "SpeechT5Config"
 
 
-SPEECHT5_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "microsoft/speecht5_asr",
-    "microsoft/speecht5_tts",
-    "microsoft/speecht5_vc",
-    # See all SpeechT5 models at https://huggingface.co/models?filter=speecht5
-]
-
-
 # Copied from transformers.models.bart.modeling_bart.shift_tokens_right
 def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
     """
@@ -73,13 +65,17 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start
     return shifted_input_ids
 
 
-def shift_spectrograms_right(input_values: torch.Tensor, reduction_factor: int = 1):
+def shift_spectrograms_right(
+    input_values: torch.Tensor, reduction_factor: int = 1, attention_mask: Optional[torch.Tensor] = None
+):
     """
     Shift input spectrograms one timestep to the right. Also applies the reduction factor to the sequence length.
     """
     # thin out frames for reduction factor
     if reduction_factor > 1:
         input_values = input_values[:, reduction_factor - 1 :: reduction_factor]
+        if attention_mask is not None:
+            attention_mask = attention_mask[:, reduction_factor - 1 :: reduction_factor]
 
     shifted_input_values = input_values.new_zeros(input_values.shape)
     shifted_input_values[:, 1:] = input_values[:, :-1].clone()
@@ -87,7 +83,7 @@ def shift_spectrograms_right(input_values: torch.Tensor, reduction_factor: int =
     # replace possible -100 values in labels by zeros
     shifted_input_values.masked_fill_(shifted_input_values == -100.0, 0.0)
 
-    return shifted_input_values
+    return shifted_input_values, attention_mask
 
 
 # Copied from transformers.models.wav2vec2.modeling_wav2vec2._compute_mask_indices
@@ -314,8 +310,8 @@ class SpeechT5SinusoidalPositionalEmbedding(nn.Module):
         """
         half_dim = embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, dtype=torch.float) * -emb)
-        emb = torch.arange(num_embeddings, dtype=torch.float).unsqueeze(1) * emb.unsqueeze(0)
+        emb = torch.exp(torch.arange(half_dim, dtype=torch.int64).float() * -emb)
+        emb = torch.arange(num_embeddings, dtype=torch.int64).float().unsqueeze(1) * emb.unsqueeze(0)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1).view(num_embeddings, -1)
         if embedding_dim % 2 == 1:
             # zero pad
@@ -377,8 +373,14 @@ class SpeechT5PositionalConvEmbedding(nn.Module):
 
             with deepspeed.zero.GatheredParameters(self.conv.weight, modifier_rank=0):
                 self.conv = weight_norm(self.conv, name="weight", dim=2)
-            deepspeed.zero.register_external_parameter(self, self.conv.weight_v)
-            deepspeed.zero.register_external_parameter(self, self.conv.weight_g)
+            if hasattr(self.conv, "parametrizations"):
+                weight_g = self.conv.parametrizations.weight.original0
+                weight_v = self.conv.parametrizations.weight.original1
+            else:
+                weight_g = self.conv.weight_g
+                weight_v = self.conv.weight_v
+            deepspeed.zero.register_external_parameter(self, weight_v)
+            deepspeed.zero.register_external_parameter(self, weight_g)
         else:
             self.conv = weight_norm(self.conv, name="weight", dim=2)
 
@@ -404,7 +406,7 @@ class SpeechT5ScaledPositionalEncoding(nn.Module):
     def __init__(self, dropout, dim, max_len=5000):
         pe = torch.zeros(max_len, dim)
         position = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp((torch.arange(0, dim, 2, dtype=torch.float) * -(math.log(10000.0) / dim)))
+        div_term = torch.exp((torch.arange(0, dim, 2, dtype=torch.int64).float() * -(math.log(10000.0) / dim)))
         pe[:, 0::2] = torch.sin(position.float() * div_term)
         pe[:, 1::2] = torch.cos(position.float() * div_term)
         pe = pe.unsqueeze(0)
@@ -523,7 +525,7 @@ class SpeechT5SpeechEncoderPrenet(nn.Module):
 
         # model only needs masking vector if mask prob is > 0.0
         if config.mask_time_prob > 0.0 or config.mask_feature_prob > 0.0:
-            self.masked_spec_embed = nn.Parameter(torch.FloatTensor(config.hidden_size).uniform_())
+            self.masked_spec_embed = nn.Parameter(torch.Tensor(config.hidden_size).uniform_())
 
         self.pos_conv_embed = SpeechT5PositionalConvEmbedding(config)
         self.pos_sinusoidal_embed = SpeechT5SinusoidalPositionalEmbedding(
@@ -665,14 +667,17 @@ class SpeechT5SpeechDecoderPrenet(nn.Module):
         )
 
         self.final_layer = nn.Linear(config.speech_decoder_prenet_units, config.hidden_size)
-
         self.encode_positions = SpeechT5ScaledPositionalEncoding(
             config.positional_dropout,
             config.hidden_size,
             config.max_speech_positions,
         )
-
         self.speaker_embeds_layer = nn.Linear(config.speaker_embedding_dim + config.hidden_size, config.hidden_size)
+
+    def _consistent_dropout(self, inputs_embeds, p):
+        mask = torch.bernoulli(inputs_embeds[0], p=p)
+        all_masks = mask.unsqueeze(0).repeat(inputs_embeds.size(0), 1, 1)
+        return torch.where(all_masks == 1, inputs_embeds, 0) * 1 / (1 - p)
 
     def forward(
         self,
@@ -684,17 +689,14 @@ class SpeechT5SpeechDecoderPrenet(nn.Module):
         inputs_embeds = input_values
         for layer in self.layers:
             inputs_embeds = nn.functional.relu(layer(inputs_embeds))
-            inputs_embeds = nn.functional.dropout(
-                inputs_embeds, self.config.speech_decoder_prenet_dropout, training=True
-            )
+            inputs_embeds = self._consistent_dropout(inputs_embeds, self.config.speech_decoder_prenet_dropout)
 
         inputs_embeds = self.final_layer(inputs_embeds)
         inputs_embeds = self.encode_positions(inputs_embeds)
 
         if speaker_embeddings is not None:
             speaker_embeddings = nn.functional.normalize(speaker_embeddings)
-            speaker_embeddings = speaker_embeddings.unsqueeze(1)
-            speaker_embeddings = speaker_embeddings.expand(-1, inputs_embeds.size(1), -1)
+            speaker_embeddings = speaker_embeddings.unsqueeze(1).expand(-1, inputs_embeds.size(1), -1)
             inputs_embeds = torch.cat([inputs_embeds, speaker_embeddings], dim=-1)
             inputs_embeds = nn.functional.relu(self.speaker_embeds_layer(inputs_embeds))
 
@@ -1317,7 +1319,7 @@ class SpeechT5Encoder(SpeechT5PreTrainedModel):
 
         position_bias = self.embed_positions(hidden_states)
 
-        deepspeed_zero3_is_enabled = is_deepspeed_zero3_enabled()
+        synced_gpus = is_deepspeed_zero3_enabled() or is_fsdp_managed_module(self)
 
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
@@ -1340,8 +1342,8 @@ class SpeechT5Encoder(SpeechT5PreTrainedModel):
                 dropout_probability = torch.rand([])
                 skip_the_layer = dropout_probability < self.layerdrop
 
-            if not skip_the_layer or deepspeed_zero3_is_enabled:
-                # under deepspeed zero3 all gpus must run in sync
+            if not skip_the_layer or synced_gpus:
+                # under fsdp or deepspeed zero3 all gpus must run in sync
                 if self.gradient_checkpointing and self.training:
                     layer_outputs = self._gradient_checkpointing_func(
                         encoder_layer.__call__,
@@ -1566,11 +1568,11 @@ class SpeechT5Decoder(SpeechT5PreTrainedModel):
 
                 If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those
                 that don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of
-                all `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of
-                shape `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing
-                `input_ids` you can choose to directly pass an embedded representation. This is useful if you want more
-                control over how to convert `input_ids` indices into associated vectors than the model's internal
-                embedding lookup matrix.
+                all `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+                Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+                This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+                than the model's internal embedding lookup matrix.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
@@ -1602,7 +1604,7 @@ class SpeechT5Decoder(SpeechT5PreTrainedModel):
                 encoder_attention_mask, hidden_states.dtype, tgt_len=input_shape[-1]
             )
 
-        deepspeed_zero3_is_enabled = is_deepspeed_zero3_enabled()
+        synced_gpus = is_deepspeed_zero3_enabled() or is_fsdp_managed_module(self)
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
@@ -1635,7 +1637,7 @@ class SpeechT5Decoder(SpeechT5PreTrainedModel):
             if self.training:
                 dropout_probability = torch.rand([])
                 skip_the_layer = dropout_probability < self.layerdrop
-            if skip_the_layer and not deepspeed_zero3_is_enabled:
+            if skip_the_layer and not synced_gpus:
                 continue
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
@@ -2337,7 +2339,7 @@ class SpeechT5ForSpeechToText(SpeechT5PreTrainedModel):
         >>> from datasets import load_dataset
 
         >>> dataset = load_dataset(
-        ...     "hf-internal-testing/librispeech_asr_demo", "clean", split="validation"
+        ...     "hf-internal-testing/librispeech_asr_demo", "clean", split="validation", trust_remote_code=True
         ... )  # doctest: +IGNORE_RESULT
         >>> dataset = dataset.sort("id")
         >>> sampling_rate = dataset.features["audio"].sampling_rate
@@ -2423,6 +2425,8 @@ class SpeechT5ForSpeechToText(SpeechT5PreTrainedModel):
         encoder_outputs=None,
         **kwargs,
     ):
+        # Note that this model doesn't inherit from the generation mixin, has unique generate function
+
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -2461,11 +2465,13 @@ def _generate_speech(
     model: SpeechT5PreTrainedModel,
     input_values: torch.FloatTensor,
     speaker_embeddings: Optional[torch.FloatTensor] = None,
+    attention_mask: Optional[torch.LongTensor] = None,
     threshold: float = 0.5,
     minlenratio: float = 0.0,
     maxlenratio: float = 20.0,
     vocoder: Optional[nn.Module] = None,
     output_cross_attentions: bool = False,
+    return_output_lengths: bool = False,
 ) -> Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]]:
     if speaker_embeddings is None:
         raise ValueError(
@@ -2475,7 +2481,12 @@ def _generate_speech(
                     """
         )
 
-    encoder_attention_mask = torch.ones_like(input_values)
+    if attention_mask is None:
+        encoder_attention_mask = 1 - (input_values == model.config.pad_token_id).int()
+    else:
+        encoder_attention_mask = attention_mask
+
+    bsz = input_values.size(0)
 
     encoder_out = model.speecht5.encoder(
         input_values=input_values,
@@ -2495,19 +2506,19 @@ def _generate_speech(
     minlen = int(encoder_last_hidden_state.size(1) * minlenratio / model.config.reduction_factor)
 
     # Start the output sequence with a mel spectrum that is all zeros.
-    output_sequence = encoder_last_hidden_state.new_zeros(1, 1, model.config.num_mel_bins)
+    output_sequence = encoder_last_hidden_state.new_zeros(bsz, 1, model.config.num_mel_bins)
 
     spectrogram = []
     cross_attentions = []
     past_key_values = None
     idx = 0
+    result_spectrogram = {}
 
     while True:
         idx += 1
 
         # Run the decoder prenet on the entire output sequence.
         decoder_hidden_states = model.speecht5.decoder.prenet(output_sequence, speaker_embeddings)
-
         # Run the decoder layers on the last element of the prenet output.
         decoder_out = model.speecht5.decoder.wrapped_decoder(
             hidden_states=decoder_hidden_states[:, -1:],
@@ -2523,36 +2534,73 @@ def _generate_speech(
         if output_cross_attentions:
             cross_attentions.append(torch.cat(decoder_out.cross_attentions, dim=0))
 
-        last_decoder_output = decoder_out.last_hidden_state[0, -1]
+        last_decoder_output = decoder_out.last_hidden_state.squeeze(1)
         past_key_values = decoder_out.past_key_values
 
         # Predict the new mel spectrum for this step in the sequence.
         spectrum = model.speech_decoder_postnet.feat_out(last_decoder_output)
-        spectrum = spectrum.view(model.config.reduction_factor, model.config.num_mel_bins)
+        spectrum = spectrum.view(bsz, model.config.reduction_factor, model.config.num_mel_bins)
         spectrogram.append(spectrum)
 
         # Extend the output sequence with the new mel spectrum.
-        output_sequence = torch.cat((output_sequence, spectrum[-1].view(1, 1, model.config.num_mel_bins)), dim=1)
-
+        new_spectrogram = spectrum[:, -1, :].view(bsz, 1, model.config.num_mel_bins)
+        output_sequence = torch.cat((output_sequence, new_spectrogram), dim=1)
         # Predict the probability that this is the stop token.
         prob = torch.sigmoid(model.speech_decoder_postnet.prob_out(last_decoder_output))
 
-        # Finished when stop token or maximum length is reached.
-        if idx >= minlen and (int(sum(prob >= threshold)) > 0 or idx >= maxlen):
-            spectrogram = torch.cat(spectrogram, dim=0).unsqueeze(0)
-            spectrogram = model.speech_decoder_postnet.postnet(spectrogram)
-            spectrogram = spectrogram.squeeze(0)
-            break
-
-    if vocoder is not None:
-        outputs = vocoder(spectrogram)
+        if idx < minlen:
+            continue
+        else:
+            # If the generation loop is less than maximum length time, check the ones in the batch that have met
+            # the prob threshold. Otherwise, assume all have met thresholds and fill other spectrograms for the batch.
+            if idx < maxlen:
+                meet_thresholds = torch.sum(prob, dim=-1) >= threshold
+                meet_indexes = torch.where(meet_thresholds)[0].tolist()
+            else:
+                meet_indexes = range(len(prob))
+            meet_indexes = [i for i in meet_indexes if i not in result_spectrogram]
+            if len(meet_indexes) > 0:
+                spectrograms = torch.stack(spectrogram)
+                spectrograms = spectrograms.transpose(0, 1).flatten(1, 2)
+                spectrograms = model.speech_decoder_postnet.postnet(spectrograms)
+                for meet_index in meet_indexes:
+                    result_spectrogram[meet_index] = spectrograms[meet_index]
+            if len(result_spectrogram) >= bsz:
+                break
+    spectrograms = [result_spectrogram[i] for i in range(len(result_spectrogram))]
+    if not return_output_lengths:
+        spectrogram = spectrograms[0] if bsz == 1 else torch.nn.utils.rnn.pad_sequence(spectrograms, batch_first=True)
+        if vocoder is not None:
+            outputs = vocoder(spectrogram)
+        else:
+            outputs = spectrogram
+        if output_cross_attentions:
+            cross_attentions = torch.cat(cross_attentions, dim=2)
+            if bsz > 1:
+                cross_attentions = cross_attentions.view(
+                    bsz, int(cross_attentions.size(0) / bsz), *cross_attentions.size()[-3:]
+                )
+            outputs = (outputs, cross_attentions)
     else:
-        outputs = spectrogram
-
-    if output_cross_attentions:
-        cross_attentions = torch.cat(cross_attentions, dim=2)
-        outputs = (outputs, cross_attentions)
-
+        # batched return values should also include the spectrogram/waveform lengths
+        spectrogram_lengths = []
+        for i in range(bsz):
+            spectrogram_lengths.append(spectrograms[i].size(0))
+        if vocoder is None:
+            spectrograms = torch.nn.utils.rnn.pad_sequence(spectrograms, batch_first=True)
+            outputs = (spectrograms, spectrogram_lengths)
+        else:
+            waveforms = []
+            spectrograms = torch.nn.utils.rnn.pad_sequence(spectrograms, batch_first=True)
+            waveforms = vocoder(spectrograms)
+            waveform_lengths = [int(waveforms.size(1) / max(spectrogram_lengths)) * i for i in spectrogram_lengths]
+            outputs = (waveforms, waveform_lengths)
+        if output_cross_attentions:
+            cross_attentions = torch.cat(cross_attentions, dim=2)
+            cross_attentions = cross_attentions.view(
+                bsz, int(cross_attentions.size(0) / bsz), *cross_attentions.size()[-3:]
+            )
+            outputs = (*outputs, cross_attentions)
     return outputs
 
 
@@ -2612,7 +2660,7 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
     ) -> Union[Tuple, Seq2SeqSpectrogramOutput]:
         r"""
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-            Indices of input sequence tokens in the vocabulary. The `batch_size` should be 1 currently.
+            Indices of input sequence tokens in the vocabulary.
 
             Indices can be obtained using [`SpeechT5Tokenizer`]. See [`~PreTrainedTokenizer.encode`] and
             [`~PreTrainedTokenizer.__call__`] for details.
@@ -2649,22 +2697,18 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
         >>> set_seed(555)  # make deterministic
 
         >>> # generate speech
-        >>> speech = model.generate(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
+        >>> speech = model.generate(inputs["input_ids"], speaker_embeddings=speaker_embeddings, vocoder=vocoder)
         >>> speech.shape
         torch.Size([15872])
         ```
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if stop_labels is not None:
-            warnings.warn(
-                "The argument `stop_labels` is deprecated and will be removed in version 4.30.0 of Transformers",
-                FutureWarning,
-            )
-
         if labels is not None:
             if decoder_input_values is None:
-                decoder_input_values = shift_spectrograms_right(labels, self.config.reduction_factor)
+                decoder_input_values, decoder_attention_mask = shift_spectrograms_right(
+                    labels, self.config.reduction_factor, decoder_attention_mask
+                )
             if self.config.use_guided_attention_loss:
                 output_attentions = True
 
@@ -2719,12 +2763,14 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
     def generate(
         self,
         input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.LongTensor] = None,
         speaker_embeddings: Optional[torch.FloatTensor] = None,
         threshold: float = 0.5,
         minlenratio: float = 0.0,
         maxlenratio: float = 20.0,
         vocoder: Optional[nn.Module] = None,
         output_cross_attentions: bool = False,
+        return_output_lengths: bool = False,
         **kwargs,
     ) -> Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]]:
         r"""
@@ -2733,12 +2779,15 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
 
         Args:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                Indices of input sequence tokens in the vocabulary. The `batch_size` should be 1 currently.
+                Indices of input sequence tokens in the vocabulary.
 
                 Indices can be obtained using [`SpeechT5Tokenizer`]. See [`~PreTrainedTokenizer.encode`] and
                 [`~PreTrainedTokenizer.__call__`] for details.
 
                 [What are input IDs?](../glossary#input-ids)
+            attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Attention mask from the tokenizer, required for batched inference to signal to the model where to
+                ignore padded tokens from the input_ids.
             speaker_embeddings (`torch.FloatTensor` of shape `(batch_size, config.speaker_embedding_dim)`, *optional*):
                 Tensor containing the speaker embeddings.
             threshold (`float`, *optional*, defaults to 0.5):
@@ -2752,26 +2801,54 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
                 spectrogram.
             output_cross_attentions (`bool`, *optional*, defaults to `False`):
                 Whether or not to return the attentions tensors of the decoder's cross-attention layers.
+            return_output_lengths (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the concrete spectrogram/waveform lengths.
 
         Returns:
             `tuple(torch.FloatTensor)` comprising various elements depending on the inputs:
-            - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
-              `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
-            - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
-              `(num_frames,)` -- The predicted speech waveform.
-            - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`) `torch.FloatTensor`
-              of shape `(config.decoder_layers, config.decoder_attention_heads, output_sequence_length,
-              input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is False
+                - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
+                - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(num_frames,)` -- The predicted speech waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is True
+                - **spectrograms** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrograms that
+                are padded to the maximum length.
+                - **spectrogram_lengths** (*optional*, returned when no `vocoder` is provided) `List[Int]` -- A list of
+                all the concrete lengths for each spectrogram.
+                - **waveforms** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, num_frames)` -- The predicted speech waveforms that are padded to the maximum length.
+                - **waveform_lengths** (*optional*, returned when a `vocoder` is provided) `List[Int]` -- A list of all
+                the concrete lengths for each waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(batch_size, config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
         """
+        if speaker_embeddings is not None:
+            batch_size = input_ids.size(0)
+            if speaker_embeddings.size(0) != batch_size:
+                if speaker_embeddings.size(0) == 1:
+                    speaker_embeddings = speaker_embeddings.repeat(batch_size, 1)
+                else:
+                    raise ValueError(
+                        "The first dimension of speaker_embeddings must be either 1 or the same as batch_size."
+                    )
+
         return _generate_speech(
             self,
             input_ids,
             speaker_embeddings,
+            attention_mask,
             threshold,
             minlenratio,
             maxlenratio,
             vocoder,
             output_cross_attentions,
+            return_output_lengths,
         )
 
     @torch.no_grad()
@@ -2779,11 +2856,13 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
         self,
         input_ids: torch.LongTensor,
         speaker_embeddings: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.LongTensor] = None,
         threshold: float = 0.5,
         minlenratio: float = 0.0,
         maxlenratio: float = 20.0,
         vocoder: Optional[nn.Module] = None,
         output_cross_attentions: bool = False,
+        return_output_lengths: bool = False,
     ) -> Union[torch.FloatTensor, Tuple[torch.FloatTensor, torch.FloatTensor]]:
         r"""
         Converts a sequence of input tokens into a sequence of mel spectrograms, which are subsequently turned into a
@@ -2791,7 +2870,7 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
 
         Args:
             input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                Indices of input sequence tokens in the vocabulary. The `batch_size` should be 1 currently.
+                Indices of input sequence tokens in the vocabulary.
 
                 Indices can be obtained using [`SpeechT5Tokenizer`]. See [`~PreTrainedTokenizer.encode`] and
                 [`~PreTrainedTokenizer.__call__`] for details.
@@ -2799,6 +2878,14 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
                 [What are input IDs?](../glossary#input-ids)
             speaker_embeddings (`torch.FloatTensor` of shape `(batch_size, config.speaker_embedding_dim)`, *optional*):
                 Tensor containing the speaker embeddings.
+            attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing convolution and attention on padding token indices. Mask values selected in
+                `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+                [What are attention masks?](../glossary#attention-mask)
             threshold (`float`, *optional*, defaults to 0.5):
                 The generated sequence ends when the predicted stop token probability exceeds this value.
             minlenratio (`float`, *optional*, defaults to 0.0):
@@ -2810,26 +2897,54 @@ class SpeechT5ForTextToSpeech(SpeechT5PreTrainedModel):
                 spectrogram.
             output_cross_attentions (`bool`, *optional*, defaults to `False`):
                 Whether or not to return the attentions tensors of the decoder's cross-attention layers.
+            return_output_lengths (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the concrete spectrogram/waveform lengths.
 
         Returns:
             `tuple(torch.FloatTensor)` comprising various elements depending on the inputs:
-            - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
-              `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
-            - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
-              `(num_frames,)` -- The predicted speech waveform.
-            - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`) `torch.FloatTensor`
-              of shape `(config.decoder_layers, config.decoder_attention_heads, output_sequence_length,
-              input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is False
+                - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
+                - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(num_frames,)` -- The predicted speech waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is True
+                - **spectrograms** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrograms that
+                are padded to the maximum length.
+                - **spectrogram_lengths** (*optional*, returned when no `vocoder` is provided) `List[Int]` -- A list of
+                all the concrete lengths for each spectrogram.
+                - **waveforms** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, num_frames)` -- The predicted speech waveforms that are padded to the maximum length.
+                - **waveform_lengths** (*optional*, returned when a `vocoder` is provided) `List[Int]` -- A list of all
+                the concrete lengths for each waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(batch_size, config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
         """
+        if speaker_embeddings is not None:
+            batch_size = input_ids.size(0)
+            if speaker_embeddings.size(0) != batch_size:
+                if speaker_embeddings.size(0) == 1:
+                    speaker_embeddings = speaker_embeddings.repeat(batch_size, 1)
+                else:
+                    raise ValueError(
+                        "The first dimension of speaker_embeddings must be either 1 or the same as batch size."
+                    )
+
         return _generate_speech(
             self,
             input_ids,
             speaker_embeddings,
+            attention_mask,
             threshold,
             minlenratio,
             maxlenratio,
             vocoder,
             output_cross_attentions,
+            return_output_lengths,
         )
 
 
@@ -2912,7 +3027,7 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
         >>> import torch
 
         >>> dataset = load_dataset(
-        ...     "hf-internal-testing/librispeech_asr_demo", "clean", split="validation"
+        ...     "hf-internal-testing/librispeech_asr_demo", "clean", split="validation", trust_remote_code=True
         ... )  # doctest: +IGNORE_RESULT
         >>> dataset = dataset.sort("id")
         >>> sampling_rate = dataset.features["audio"].sampling_rate
@@ -2936,15 +3051,11 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if stop_labels is not None:
-            warnings.warn(
-                "The argument `stop_labels` is deprecated and will be removed in version 4.30.0 of Transformers",
-                FutureWarning,
-            )
-
         if labels is not None:
             if decoder_input_values is None:
-                decoder_input_values = shift_spectrograms_right(labels, self.config.reduction_factor)
+                decoder_input_values, decoder_attention_mask = shift_spectrograms_right(
+                    labels, self.config.reduction_factor, decoder_attention_mask
+                )
 
         outputs = self.speecht5(
             input_values=input_values,
@@ -2988,11 +3099,13 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
         self,
         input_values: torch.FloatTensor,
         speaker_embeddings: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.LongTensor] = None,
         threshold: float = 0.5,
         minlenratio: float = 0.0,
         maxlenratio: float = 20.0,
         vocoder: Optional[nn.Module] = None,
         output_cross_attentions: bool = False,
+        return_output_lengths: bool = False,
     ) -> torch.FloatTensor:
         r"""
         Converts a raw speech waveform into a sequence of mel spectrograms, which are subsequently turned back into a
@@ -3000,7 +3113,7 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
 
         Args:
             input_values (`torch.FloatTensor` of shape `(batch_size, sequence_length)`):
-                Float values of input raw speech waveform. The `batch_size` should be 1 currently.
+                Float values of input raw speech waveform.
 
                 Values can be obtained by loading a *.flac* or *.wav* audio file into an array of type `List[float]` or
                 a `numpy.ndarray`, *e.g.* via the soundfile library (*pip install soundfile*). To prepare the array
@@ -3008,6 +3121,14 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
                 of type `torch.FloatTensor`. See [`SpeechT5Processor.__call__`] for details.
             speaker_embeddings (`torch.FloatTensor` of shape `(batch_size, config.speaker_embedding_dim)`, *optional*):
                 Tensor containing the speaker embeddings.
+            attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing convolution and attention on padding token indices. Mask values selected in
+                `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+                [What are attention masks?](../glossary#attention-mask)
             threshold (`float`, *optional*, defaults to 0.5):
                 The generated sequence ends when the predicted stop token probability exceeds this value.
             minlenratio (`float`, *optional*, defaults to 0.0):
@@ -3019,16 +3140,32 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
                 spectrogram.
             output_cross_attentions (`bool`, *optional*, defaults to `False`):
                 Whether or not to return the attentions tensors of the decoder's cross-attention layers.
+            return_output_lengths (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the concrete spectrogram/waveform lengths.
 
         Returns:
             `tuple(torch.FloatTensor)` comprising various elements depending on the inputs:
-            - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
-              `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
-            - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
-              `(num_frames,)` -- The predicted speech waveform.
-            - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`) `torch.FloatTensor`
-              of shape `(config.decoder_layers, config.decoder_attention_heads, output_sequence_length,
-              input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is False
+                - **spectrogram** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrogram.
+                - **waveform** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(num_frames,)` -- The predicted speech waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
+            - when `return_output_lengths` is True
+                - **spectrograms** (*optional*, returned when no `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, output_sequence_length, config.num_mel_bins)` -- The predicted log-mel spectrograms that
+                are padded to the maximum length.
+                - **spectrogram_lengths** (*optional*, returned when no `vocoder` is provided) `List[Int]` -- A list of
+                all the concrete lengths for each spectrogram.
+                - **waveforms** (*optional*, returned when a `vocoder` is provided) `torch.FloatTensor` of shape
+                `(batch_size, num_frames)` -- The predicted speech waveforms that are padded to the maximum length.
+                - **waveform_lengths** (*optional*, returned when a `vocoder` is provided) `List[Int]` -- A list of all
+                the concrete lengths for each waveform.
+                - **cross_attentions** (*optional*, returned when `output_cross_attentions` is `True`)
+                `torch.FloatTensor` of shape `(batch_size, config.decoder_layers, config.decoder_attention_heads,
+                output_sequence_length, input_sequence_length)` -- The outputs of the decoder's cross-attention layers.
         """
         if speaker_embeddings is None:
             speaker_embeddings = torch.zeros((1, 512), device=input_values.device)
@@ -3037,11 +3174,13 @@ class SpeechT5ForSpeechToSpeech(SpeechT5PreTrainedModel):
             self,
             input_values,
             speaker_embeddings,
+            attention_mask,
             threshold,
             minlenratio,
             maxlenratio,
             vocoder,
             output_cross_attentions,
+            return_output_lengths,
         )
 
 
@@ -3098,10 +3237,14 @@ class HifiGanResidualBlock(nn.Module):
         return (kernel_size * dilation - dilation) // 2
 
     def apply_weight_norm(self):
+        weight_norm = nn.utils.weight_norm
+        if hasattr(nn.utils.parametrizations, "weight_norm"):
+            weight_norm = nn.utils.parametrizations.weight_norm
+
         for layer in self.convs1:
-            nn.utils.weight_norm(layer)
+            weight_norm(layer)
         for layer in self.convs2:
-            nn.utils.weight_norm(layer)
+            weight_norm(layer)
 
     def remove_weight_norm(self):
         for layer in self.convs1:
@@ -3174,12 +3317,16 @@ class SpeechT5HifiGan(PreTrainedModel):
                 module.bias.data.zero_()
 
     def apply_weight_norm(self):
-        nn.utils.weight_norm(self.conv_pre)
+        weight_norm = nn.utils.weight_norm
+        if hasattr(nn.utils.parametrizations, "weight_norm"):
+            weight_norm = nn.utils.parametrizations.weight_norm
+
+        weight_norm(self.conv_pre)
         for layer in self.upsampler:
-            nn.utils.weight_norm(layer)
+            weight_norm(layer)
         for layer in self.resblocks:
             layer.apply_weight_norm()
-        nn.utils.weight_norm(self.conv_post)
+        weight_norm(self.conv_post)
 
     def remove_weight_norm(self):
         nn.utils.remove_weight_norm(self.conv_pre)

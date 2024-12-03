@@ -29,7 +29,7 @@ rendered properly in your Markdown viewer.
 
 OpenAI GPT model was proposed in [Improving Language Understanding by Generative Pre-Training](https://s3-us-west-2.amazonaws.com/openai-assets/research-covers/language-unsupervised/language_understanding_paper.pdf)
 by Alec Radford, Karthik Narasimhan, Tim Salimans and Ilya Sutskever. It's a causal (unidirectional) transformer
-pre-trained using language modeling on a large corpus will long range dependencies, the Toronto Book Corpus.
+pre-trained using language modeling on a large corpus with long range dependencies, the Toronto Book Corpus.
 
 The abstract from the paper is the following:
 
@@ -44,7 +44,12 @@ approach on a wide range of benchmarks for natural language understanding. Our g
 discriminatively trained models that use architectures specifically crafted for each task, significantly improving upon
 the state of the art in 9 out of the 12 tasks studied.*
 
-Tips:
+[Write With Transformer](https://transformer.huggingface.co/doc/gpt) is a webapp created and hosted by Hugging Face
+showcasing the generative capabilities of several models. GPT is one of them.
+
+This model was contributed by [thomwolf](https://huggingface.co/thomwolf). The original code can be found [here](https://github.com/openai/finetune-transformer-lm).
+
+## Usage tips
 
 - GPT is a model with absolute position embeddings so it's usually advised to pad the inputs on the right rather than
   the left.
@@ -52,10 +57,6 @@ Tips:
   token in a sequence. Leveraging this feature allows GPT-2 to generate syntactically coherent text as it can be
   observed in the *run_generation.py* example script.
 
-[Write With Transformer](https://transformer.huggingface.co/doc/gpt) is a webapp created and hosted by Hugging Face
-showcasing the generative capabilities of several models. GPT is one of them.
-
-This model was contributed by [thomwolf](https://huggingface.co/thomwolf). The original code can be found [here](https://github.com/openai/finetune-transformer-lm).
 
 Note:
 
@@ -116,6 +117,9 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 
 [[autodoc]] models.openai.modeling_tf_openai.TFOpenAIGPTDoubleHeadsModelOutput
 
+<frameworkcontent>
+<pt>
+
 ## OpenAIGPTModel
 
 [[autodoc]] OpenAIGPTModel
@@ -136,6 +140,9 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 [[autodoc]] OpenAIGPTForSequenceClassification
     - forward
 
+</pt>
+<tf>
+
 ## TFOpenAIGPTModel
 
 [[autodoc]] TFOpenAIGPTModel
@@ -155,3 +162,6 @@ A list of official Hugging Face and community (indicated by 🌎) resources to h
 
 [[autodoc]] TFOpenAIGPTForSequenceClassification
     - call
+
+</tf>
+</frameworkcontent>

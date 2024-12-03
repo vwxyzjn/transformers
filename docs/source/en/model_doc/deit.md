@@ -16,13 +16,6 @@ rendered properly in your Markdown viewer.
 
 # DeiT
 
-<Tip>
-
-This is a recently introduced model so the API hasn't been tested extensively. There may be some bugs or slight
-breaking changes to fix it in the future. If you see something strange, file a [Github Issue](https://github.com/huggingface/transformers/issues/new?assignees=&labels=&template=bug-report.md&title).
-
-</Tip>
-
 ## Overview
 
 The DeiT model was proposed in [Training data-efficient image transformers & distillation through attention](https://arxiv.org/abs/2012.12877) by Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco Massa, Alexandre
@@ -45,7 +38,9 @@ distillation, especially when using a convnet as a teacher. This leads us to rep
 for both Imagenet (where we obtain up to 85.2% accuracy) and when transferring to other tasks. We share our code and
 models.*
 
-Tips:
+This model was contributed by [nielsr](https://huggingface.co/nielsr). The TensorFlow version of this model was added by [amyeroberts](https://huggingface.co/amyeroberts).
+
+## Usage tips
 
 - Compared to ViT, DeiT models use a so-called distillation token to effectively learn from a teacher (which, in the
   DeiT paper, is a ResNet like-model). The distillation token is learned through backpropagation, by interacting with
@@ -73,7 +68,33 @@ Tips:
   *facebook/deit-base-patch16-384*. Note that one should use [`DeiTImageProcessor`] in order to
   prepare images for the model.
 
-This model was contributed by [nielsr](https://huggingface.co/nielsr). The TensorFlow version of this model was added by [amyeroberts](https://huggingface.co/amyeroberts).
+### Using Scaled Dot Product Attention (SDPA)
+
+PyTorch includes a native scaled dot-product attention (SDPA) operator as part of `torch.nn.functional`. This function 
+encompasses several implementations that can be applied depending on the inputs and the hardware in use. See the 
+[official documentation](https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html) 
+or the [GPU Inference](https://huggingface.co/docs/transformers/main/en/perf_infer_gpu_one#pytorch-scaled-dot-product-attention)
+page for more information.
+
+SDPA is used by default for `torch>=2.1.1` when an implementation is available, but you may also set 
+`attn_implementation="sdpa"` in `from_pretrained()` to explicitly request SDPA to be used.
+
+```
+from transformers import DeiTForImageClassification
+model = DeiTForImageClassification.from_pretrained("facebook/deit-base-distilled-patch16-224", attn_implementation="sdpa", torch_dtype=torch.float16)
+...
+```
+
+For the best speedups, we recommend loading the model in half-precision (e.g. `torch.float16` or `torch.bfloat16`).
+
+On a local benchmark (A100-40GB, PyTorch 2.3.0, OS Ubuntu 22.04) with `float32` and `facebook/deit-base-distilled-patch16-224` model, we saw the following speedups during inference.
+
+|   Batch size |   Average inference time (ms), eager mode |   Average inference time (ms), sdpa model |   Speed up, Sdpa / Eager (x) |
+|--------------|-------------------------------------------|-------------------------------------------|------------------------------|
+|            1 |                                         8 |                                         6 |                      1.33 |
+|            2 |                                         9 |                                         6 |                      1.5  |
+|            4 |                                         9 |                                         6 |                      1.5  |
+|            8 |                                         8 |                                         6 |                      1.33 |
 
 ## Resources
 
@@ -104,6 +125,9 @@ If you're interested in submitting a resource to be included here, please feel f
 [[autodoc]] DeiTImageProcessor
     - preprocess
 
+<frameworkcontent>
+<pt>
+
 ## DeiTModel
 
 [[autodoc]] DeiTModel
@@ -124,6 +148,9 @@ If you're interested in submitting a resource to be included here, please feel f
 [[autodoc]] DeiTForImageClassificationWithTeacher
     - forward
 
+</pt>
+<tf>
+
 ## TFDeiTModel
 
 [[autodoc]] TFDeiTModel
@@ -143,3 +170,6 @@ If you're interested in submitting a resource to be included here, please feel f
 
 [[autodoc]] TFDeiTForImageClassificationWithTeacher
     - call
+
+</tf>
+</frameworkcontent>

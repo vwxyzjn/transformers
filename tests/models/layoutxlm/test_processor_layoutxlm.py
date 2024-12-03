@@ -19,10 +19,8 @@ import tempfile
 import unittest
 from typing import List
 
-import numpy as np
-
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
-from transformers.models.layoutxlm import LayoutXLMTokenizer, LayoutXLMTokenizerFast
+from transformers.models.layoutxlm import LayoutXLMProcessor, LayoutXLMTokenizer, LayoutXLMTokenizerFast
 from transformers.testing_utils import (
     require_pytesseract,
     require_sentencepiece,
@@ -32,19 +30,22 @@ from transformers.testing_utils import (
 )
 from transformers.utils import FEATURE_EXTRACTOR_NAME, cached_property, is_pytesseract_available
 
+from ...test_processing_common import ProcessorTesterMixin
+
 
 if is_pytesseract_available():
     from PIL import Image
 
-    from transformers import LayoutLMv2ImageProcessor, LayoutXLMProcessor
+    from transformers import LayoutLMv2ImageProcessor
 
 
 @require_pytesseract
 @require_sentencepiece
 @require_tokenizers
-class LayoutXLMProcessorTest(unittest.TestCase):
+class LayoutXLMProcessorTest(ProcessorTesterMixin, unittest.TestCase):
     tokenizer_class = LayoutXLMTokenizer
     rust_tokenizer_class = LayoutXLMTokenizerFast
+    processor_class = LayoutXLMProcessor
 
     def setUp(self):
         image_processor_map = {
@@ -61,6 +62,11 @@ class LayoutXLMProcessorTest(unittest.TestCase):
         # taken from `test_tokenization_layoutxlm.LayoutXLMTokenizationTest.test_save_pretrained`
         self.tokenizer_pretrained_name = "hf-internal-testing/tiny-random-layoutxlm"
 
+        tokenizer = self.get_tokenizer()
+        image_processor = self.get_image_processor()
+        processor = LayoutXLMProcessor(tokenizer=tokenizer, image_processor=image_processor)
+        processor.save_pretrained(self.tmpdirname)
+
     def get_tokenizer(self, **kwargs) -> PreTrainedTokenizer:
         return self.tokenizer_class.from_pretrained(self.tokenizer_pretrained_name, **kwargs)
 
@@ -75,17 +81,6 @@ class LayoutXLMProcessorTest(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdirname)
-
-    def prepare_image_inputs(self):
-        """This function prepares a list of PIL images, or a list of numpy arrays if one specifies numpify=True,
-        or a list of PyTorch tensors if one specifies torchify=True.
-        """
-
-        image_inputs = [np.random.randint(255, size=(3, 30, 400), dtype=np.uint8)]
-
-        image_inputs = [Image.fromarray(np.moveaxis(x, 0, -1)) for x in image_inputs]
-
-        return image_inputs
 
     def test_save_load_pretrained_default(self):
         image_processor = self.get_image_processor()
@@ -160,7 +155,7 @@ class LayoutXLMProcessorTest(unittest.TestCase):
         from datasets import load_dataset
 
         # set up
-        datasets = load_dataset("nielsr/funsd")
+        datasets = load_dataset("nielsr/funsd", trust_remote_code=True)
         processor = LayoutXLMProcessor.from_pretrained("microsoft/layoutxlm-base", apply_ocr=False)
 
         def preprocess_data(examples):
@@ -198,7 +193,7 @@ class LayoutXLMProcessorIntegrationTests(unittest.TestCase):
         # we verify our implementation on 2 document images from the DocVQA dataset
         from datasets import load_dataset
 
-        ds = load_dataset("hf-internal-testing/fixtures_docvqa", split="test")
+        ds = load_dataset("hf-internal-testing/fixtures_docvqa", split="test", trust_remote_code=True)
 
         image_1 = Image.open(ds[0]["file"]).convert("RGB")
         image_2 = Image.open(ds[1]["file"]).convert("RGB")
@@ -238,9 +233,7 @@ class LayoutXLMProcessorIntegrationTests(unittest.TestCase):
 
             # verify input_ids
             # this was obtained with Tesseract 4.1.1
-            # fmt: off
-            expected_decoding = "<s> 11:14 to 11:39 a.m 11:39 to 11:44 a.m. 11:44 a.m. to 12:25 p.m. 12:25 to 12:58 p.m. 12:58 to 4:00 p.m. 2:00 to 5:00 p.m. Coffee Break Coffee will be served for men and women in the lobby adjacent to exhibit area. Please move into exhibit area. (Exhibits Open) TRRF GENERAL SESSION (PART |) Presiding: Lee A. Waller TRRF Vice President “Introductory Remarks” Lee A. Waller, TRRF Vice Presi- dent Individual Interviews with TRRF Public Board Members and Sci- entific Advisory Council Mem- bers Conducted by TRRF Treasurer Philip G. Kuehn to get answers which the public refrigerated warehousing industry is looking for. Plus questions from the floor. Dr. Emil M. Mrak, University of Cal- ifornia, Chairman, TRRF Board; Sam R. Cecil, University of Georgia College of Agriculture; Dr. Stanley Charm, Tufts University School of Medicine; Dr. Robert H. Cotton, ITT Continental Baking Company; Dr. Owen Fennema, University of Wis- consin; Dr. Robert E. Hardenburg, USDA. Questions and Answers Exhibits Open Capt. Jack Stoney Room TRRF Scientific Advisory Council Meeting Ballroom Foyer</s>"  # noqa: E231
-            # fmt: on
+            expected_decoding = "<s> 11:14 to 11:39 a.m 11:39 to 11:44 a.m. 11:44 a.m. to 12:25 p.m. 12:25 to 12:58 p.m. 12:58 to 4:00 p.m. 2:00 to 5:00 p.m. Coffee Break Coffee will be served for men and women in the lobby adjacent to exhibit area. Please move into exhibit area. (Exhibits Open) TRRF GENERAL SESSION (PART |) Presiding: Lee A. Waller TRRF Vice President “Introductory Remarks” Lee A. Waller, TRRF Vice Presi- dent Individual Interviews with TRRF Public Board Members and Sci- entific Advisory Council Mem- bers Conducted by TRRF Treasurer Philip G. Kuehn to get answers which the public refrigerated warehousing industry is looking for. Plus questions from the floor. Dr. Emil M. Mrak, University of Cal- ifornia, Chairman, TRRF Board; Sam R. Cecil, University of Georgia College of Agriculture; Dr. Stanley Charm, Tufts University School of Medicine; Dr. Robert H. Cotton, ITT Continental Baking Company; Dr. Owen Fennema, University of Wis- consin; Dr. Robert E. Hardenburg, USDA. Questions and Answers Exhibits Open Capt. Jack Stoney Room TRRF Scientific Advisory Council Meeting Ballroom Foyer</s>"  # fmt: skip
             decoding = processor.decode(input_processor.input_ids.squeeze().tolist())
             self.assertSequenceEqual(decoding, expected_decoding)
 
@@ -260,9 +253,7 @@ class LayoutXLMProcessorIntegrationTests(unittest.TestCase):
 
             # verify input_ids
             # this was obtained with Tesseract 4.1.1
-            # fmt: off
-            expected_decoding = "<s> 7 ITC Limited REPORT AND ACCOUNTS 2013 ITC’s Brands: An Asset for the Nation The consumer needs and aspirations they fulfil, the benefit they generate for millions across ITC’s value chains, the future-ready capabilities that support them, and the value that they create for the country, have made ITC’s brands national assets, adding to India’s competitiveness. It is ITC’s aspiration to be the No 1 FMCG player in the country, driven by its new FMCG businesses. A recent Nielsen report has highlighted that ITC's new FMCG businesses are the fastest growing among the top consumer goods companies operating in India. ITC takes justifiable pride that, along with generating economic value, these celebrated Indian brands also drive the creation of larger societal capital through the virtuous cycle of sustainable and inclusive growth. DI WILLS * ; LOVE DELIGHTFULLY SOFT SKIN? aia Ans Source: https://www.industrydocuments.ucsf.edu/docs/snbx0223</s><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>"  # noqa: E231
-            # fmt: on
+            expected_decoding = "<s> 7 ITC Limited REPORT AND ACCOUNTS 2013 ITC’s Brands: An Asset for the Nation The consumer needs and aspirations they fulfil, the benefit they generate for millions across ITC’s value chains, the future-ready capabilities that support them, and the value that they create for the country, have made ITC’s brands national assets, adding to India’s competitiveness. It is ITC’s aspiration to be the No 1 FMCG player in the country, driven by its new FMCG businesses. A recent Nielsen report has highlighted that ITC's new FMCG businesses are the fastest growing among the top consumer goods companies operating in India. ITC takes justifiable pride that, along with generating economic value, these celebrated Indian brands also drive the creation of larger societal capital through the virtuous cycle of sustainable and inclusive growth. DI WILLS * ; LOVE DELIGHTFULLY SOFT SKIN? aia Ans Source: https://www.industrydocuments.ucsf.edu/docs/snbx0223</s><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>"  # fmt: skip
             decoding = processor.decode(input_processor.input_ids[1].tolist())
             self.assertSequenceEqual(decoding, expected_decoding)
 
@@ -407,9 +398,7 @@ class LayoutXLMProcessorIntegrationTests(unittest.TestCase):
 
             # verify input_ids
             # this was obtained with Tesseract 4.1.1
-            # fmt: off
-            expected_decoding = "<s> What's his name?</s></s> 11:14 to 11:39 a.m 11:39 to 11:44 a.m. 11:44 a.m. to 12:25 p.m. 12:25 to 12:58 p.m. 12:58 to 4:00 p.m. 2:00 to 5:00 p.m. Coffee Break Coffee will be served for men and women in the lobby adjacent to exhibit area. Please move into exhibit area. (Exhibits Open) TRRF GENERAL SESSION (PART |) Presiding: Lee A. Waller TRRF Vice President “Introductory Remarks” Lee A. Waller, TRRF Vice Presi- dent Individual Interviews with TRRF Public Board Members and Sci- entific Advisory Council Mem- bers Conducted by TRRF Treasurer Philip G. Kuehn to get answers which the public refrigerated warehousing industry is looking for. Plus questions from the floor. Dr. Emil M. Mrak, University of Cal- ifornia, Chairman, TRRF Board; Sam R. Cecil, University of Georgia College of Agriculture; Dr. Stanley Charm, Tufts University School of Medicine; Dr. Robert H. Cotton, ITT Continental Baking Company; Dr. Owen Fennema, University of Wis- consin; Dr. Robert E. Hardenburg, USDA. Questions and Answers Exhibits Open Capt. Jack Stoney Room TRRF Scientific Advisory Council Meeting Ballroom Foyer</s>"  # noqa: E231
-            # fmt: on
+            expected_decoding = "<s> What's his name?</s></s> 11:14 to 11:39 a.m 11:39 to 11:44 a.m. 11:44 a.m. to 12:25 p.m. 12:25 to 12:58 p.m. 12:58 to 4:00 p.m. 2:00 to 5:00 p.m. Coffee Break Coffee will be served for men and women in the lobby adjacent to exhibit area. Please move into exhibit area. (Exhibits Open) TRRF GENERAL SESSION (PART |) Presiding: Lee A. Waller TRRF Vice President “Introductory Remarks” Lee A. Waller, TRRF Vice Presi- dent Individual Interviews with TRRF Public Board Members and Sci- entific Advisory Council Mem- bers Conducted by TRRF Treasurer Philip G. Kuehn to get answers which the public refrigerated warehousing industry is looking for. Plus questions from the floor. Dr. Emil M. Mrak, University of Cal- ifornia, Chairman, TRRF Board; Sam R. Cecil, University of Georgia College of Agriculture; Dr. Stanley Charm, Tufts University School of Medicine; Dr. Robert H. Cotton, ITT Continental Baking Company; Dr. Owen Fennema, University of Wis- consin; Dr. Robert E. Hardenburg, USDA. Questions and Answers Exhibits Open Capt. Jack Stoney Room TRRF Scientific Advisory Council Meeting Ballroom Foyer</s>"  # fmt: skip
             decoding = processor.decode(input_processor.input_ids.squeeze().tolist())
             self.assertSequenceEqual(decoding, expected_decoding)
 
@@ -431,9 +420,7 @@ class LayoutXLMProcessorIntegrationTests(unittest.TestCase):
             self.assertSequenceEqual(decoding, expected_decoding)
 
             # verify bbox
-            # fmt: off
-            expected_bbox = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [1000, 1000, 1000, 1000], [1000, 1000, 1000, 1000], [0, 45, 67, 80], [72, 56, 109, 67], [72, 56, 109, 67], [116, 56, 189, 67], [198, 59, 253, 66], [257, 59, 285, 66], [289, 59, 365, 66], [289, 59, 365, 66], [289, 59, 365, 66], [289, 59, 365, 66], [372, 59, 407, 66], [1000, 1000, 1000, 1000]]  # noqa: E231
-            # fmt: on
+            expected_bbox = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [1000, 1000, 1000, 1000], [1000, 1000, 1000, 1000], [0, 45, 67, 80], [72, 56, 109, 67], [72, 56, 109, 67], [116, 56, 189, 67], [198, 59, 253, 66], [257, 59, 285, 66], [289, 59, 365, 66], [289, 59, 365, 66], [289, 59, 365, 66], [289, 59, 365, 66], [372, 59, 407, 66], [1000, 1000, 1000, 1000]]  # fmt: skip
             self.assertListEqual(input_processor.bbox[1].tolist(), expected_bbox)
 
     @slow

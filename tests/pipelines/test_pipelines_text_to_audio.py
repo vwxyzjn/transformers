@@ -27,6 +27,7 @@ from transformers.testing_utils import (
     require_torch,
     require_torch_accelerator,
     require_torch_or_tf,
+    run_test_using_subprocess,
     slow,
     torch_device,
 )
@@ -65,6 +66,29 @@ class TextToAudioPipelineTests(unittest.TestCase):
         )
         audio = [output["audio"] for output in outputs]
         self.assertEqual([ANY(np.ndarray), ANY(np.ndarray)], audio)
+
+    # TODO: @ylacombe: `SeamlessM4TForTextToSpeech.generate` has issue with `generation_config`. See issue #34811
+    @slow
+    @require_torch
+    @run_test_using_subprocess
+    def test_medium_seamless_m4t_pt(self):
+        speech_generator = pipeline(task="text-to-audio", model="facebook/hf-seamless-m4t-medium", framework="pt")
+
+        for forward_params in [{"tgt_lang": "eng"}, {"return_intermediate_token_ids": True, "tgt_lang": "eng"}]:
+            outputs = speech_generator("This is a test", forward_params=forward_params)
+            self.assertEqual({"audio": ANY(np.ndarray), "sampling_rate": 16000}, outputs)
+
+            # test two examples side-by-side
+            outputs = speech_generator(["This is a test", "This is a second test"], forward_params=forward_params)
+            audio = [output["audio"] for output in outputs]
+            self.assertEqual([ANY(np.ndarray), ANY(np.ndarray)], audio)
+
+            # test batching
+            outputs = speech_generator(
+                ["This is a test", "This is a second test"], forward_params=forward_params, batch_size=2
+            )
+            audio = [output["audio"] for output in outputs]
+            self.assertEqual([ANY(np.ndarray), ANY(np.ndarray)], audio)
 
     @slow
     @require_torch
@@ -229,8 +253,23 @@ class TextToAudioPipelineTests(unittest.TestCase):
         outputs = music_generator("This is a test", forward_params=forward_params, generate_kwargs=generate_kwargs)
         self.assertListEqual(outputs["audio"].tolist(), audio.tolist())
 
-    def get_test_pipeline(self, model, tokenizer, processor):
-        speech_generator = TextToAudioPipeline(model=model, tokenizer=tokenizer)
+    def get_test_pipeline(
+        self,
+        model,
+        tokenizer=None,
+        image_processor=None,
+        feature_extractor=None,
+        processor=None,
+        torch_dtype="float32",
+    ):
+        speech_generator = TextToAudioPipeline(
+            model=model,
+            tokenizer=tokenizer,
+            feature_extractor=feature_extractor,
+            image_processor=image_processor,
+            processor=processor,
+            torch_dtype=torch_dtype,
+        )
         return speech_generator, ["This is a test", "Another test"]
 
     def run_pipeline_test(self, speech_generator, _):

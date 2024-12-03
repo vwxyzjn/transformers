@@ -24,6 +24,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN, gelu
+from ...generation import GenerationMixin
 from ...modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
     BaseModelOutputWithPoolingAndCrossAttentions,
@@ -50,18 +51,6 @@ logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "andreasmadsen/efficient_mlm_m0.40"
 _CONFIG_FOR_DOC = "RobertaPreLayerNormConfig"
-
-ROBERTA_PRELAYERNORM_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "andreasmadsen/efficient_mlm_m0.15",
-    "andreasmadsen/efficient_mlm_m0.20",
-    "andreasmadsen/efficient_mlm_m0.30",
-    "andreasmadsen/efficient_mlm_m0.40",
-    "andreasmadsen/efficient_mlm_m0.50",
-    "andreasmadsen/efficient_mlm_m0.60",
-    "andreasmadsen/efficient_mlm_m0.70",
-    "andreasmadsen/efficient_mlm_m0.80",
-    # See all RoBERTaWithPreLayerNorm models at https://huggingface.co/models?filter=roberta_with_prelayernorm
-]
 
 
 # Copied from transformers.models.roberta.modeling_roberta.RobertaEmbeddings with Roberta->RobertaPreLayerNorm
@@ -581,7 +570,6 @@ class RobertaPreLayerNormPooler(nn.Module):
         return pooled_output
 
 
-# Copied from transformers.models.roberta.modeling_roberta.RobertaPreTrainedModel with Roberta->RobertaPreLayerNorm,roberta->roberta_prelayernorm
 class RobertaPreLayerNormPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
@@ -867,8 +855,8 @@ class RobertaPreLayerNormModel(RobertaPreLayerNormPreTrainedModel):
     """RoBERTa-PreLayerNorm Model with a `language modeling` head on top for CLM fine-tuning.""",
     ROBERTA_PRELAYERNORM_START_DOCSTRING,
 )
-# Copied from transformers.models.roberta.modeling_roberta.RobertaForCausalLM with roberta-base->andreasmadsen/efficient_mlm_m0.40,ROBERTA->ROBERTA_PRELAYERNORM,Roberta->RobertaPreLayerNorm,roberta->roberta_prelayernorm, RobertaPreLayerNormTokenizer->RobertaTokenizer
-class RobertaPreLayerNormForCausalLM(RobertaPreLayerNormPreTrainedModel):
+# Copied from transformers.models.roberta.modeling_roberta.RobertaForCausalLM with FacebookAI/roberta-base->andreasmadsen/efficient_mlm_m0.40,ROBERTA->ROBERTA_PRELAYERNORM,Roberta->RobertaPreLayerNorm,roberta->roberta_prelayernorm, RobertaPreLayerNormTokenizer->RobertaTokenizer
+class RobertaPreLayerNormForCausalLM(RobertaPreLayerNormPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.decoder.weight", "lm_head.decoder.bias"]
 
     def __init__(self, config):
@@ -999,27 +987,6 @@ class RobertaPreLayerNormForCausalLM(RobertaPreLayerNormPreTrainedModel):
             cross_attentions=outputs.cross_attentions,
         )
 
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, attention_mask=None, **model_kwargs):
-        input_shape = input_ids.shape
-        # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
-        if attention_mask is None:
-            attention_mask = input_ids.new_ones(input_shape)
-
-        # cut decoder_input_ids if past_key_values is used
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "past_key_values": past_key_values}
-
     def _reorder_cache(self, past_key_values, beam_idx):
         reordered_past = ()
         for layer_past in past_key_values:
@@ -1087,7 +1054,7 @@ class RobertaPreLayerNormForMaskedLM(RobertaPreLayerNormPreTrainedModel):
             Labels for computing the masked language modeling loss. Indices should be in `[-100, 0, ...,
             config.vocab_size]` (see `input_ids` docstring) Tokens with indices set to `-100` are ignored (masked), the
             loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`
-        kwargs (`Dict[str, any]`, optional, defaults to *{}*):
+        kwargs (`Dict[str, any]`, *optional*, defaults to `{}`):
             Used to hide legacy arguments that have been deprecated.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict

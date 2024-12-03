@@ -24,6 +24,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, LayerNorm, MSELoss
 from torch.nn import functional as F
 
 from ...file_utils import add_code_sample_docstrings, add_start_docstrings, add_start_docstrings_to_model_forward
+from ...generation import GenerationMixin
 from ...modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from ...modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
@@ -42,19 +43,6 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "mosaicml/mpt-7b"
 _CONFIG_FOR_DOC = "MptConfig"
 
-MPT_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "mosaicml/mpt-7b",
-    "mosaicml/mpt-7b-storywriter",
-    "mosaicml/mpt-7b-instruct",
-    "mosaicml/mpt-7b-8k",
-    "mosaicml/mpt-7b-8k-instruct",
-    "mosaicml/mpt-7b-8k-chat",
-    "mosaicml/mpt-30b",
-    "mosaicml/mpt-30b-instruct",
-    "mosaicml/mpt-30b-chat"
-    # See all MPT models at https://huggingface.co/models?filter=mpt
-]
-
 
 def build_mpt_alibi_tensor(num_heads, sequence_length, alibi_bias_max=8, device=None):
     r"""
@@ -66,14 +54,14 @@ def build_mpt_alibi_tensor(num_heads, sequence_length, alibi_bias_max=8, device=
     alibi = torch.arange(1 - sequence_length, 1, dtype=torch.int32, device=device).view(1, 1, 1, sequence_length)
     num_heads_power_of_2 = 2 ** math.ceil(math.log2(num_heads))
 
-    base = torch.arange(1, num_heads_power_of_2 + 1, dtype=torch.float32, device=device)
+    base = torch.arange(1, num_heads_power_of_2 + 1, dtype=torch.int64, device=device).float()
     base = base * (alibi_bias_max / num_heads_power_of_2)
 
     slopes = 1.0 / torch.pow(2, base)
-    slopes = slopes.view(1, num_heads, 1, 1)
+    slopes = slopes.view(1, num_heads_power_of_2, 1, 1)
 
     if num_heads_power_of_2 != num_heads:
-        slopes = torch.concat([slopes[1::2], slopes[::2]])[:num_heads]
+        slopes = torch.concat([slopes[:, 1::2, ...], slopes[:, ::2, ...]], dim=1)[:, :num_heads, ...]
 
     alibi = alibi * slopes
     return alibi.squeeze(0)
@@ -95,6 +83,7 @@ class MptAttention(nn.Module):
             self.softmax_scale = 1 / math.sqrt(self.hidden_size / self.n_heads)
 
         self.attn_dropout_p = config.attn_config.attn_pdrop
+        self.clip_qkv = config.attn_config.clip_qkv
         self.Wqkv = nn.Linear(self.hidden_size, 3 * self.hidden_size, bias=False)
         self.out_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
 
@@ -108,6 +97,9 @@ class MptAttention(nn.Module):
         batch_size, seq_length = hidden_states.shape[:2]
 
         mixed_qkv = self.Wqkv(hidden_states)
+        if self.clip_qkv:
+            mixed_qkv = mixed_qkv.clamp(min=-self.clip_qkv, max=self.clip_qkv)
+
         query_states, key_states, value_states = mixed_qkv.chunk(3, dim=2)
         query_states = query_states.reshape(batch_size, seq_length, self.n_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.reshape(batch_size, seq_length, self.n_heads, self.head_dim).transpose(1, 2)
@@ -265,7 +257,7 @@ class MptPreTrainedModel(PreTrainedModel):
 
     @staticmethod
     def _convert_to_mpt_cache(
-        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor]]
+        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor]],
     ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
         """
         Converts the cache to the format expected by Mpt, i.e. to tuple(tuple([batch_size * num_heads, ...]))
@@ -509,7 +501,7 @@ class MptModel(MptPreTrainedModel):
     """,
     MPT_START_DOCSTRING,
 )
-class MptForCausalLM(MptPreTrainedModel):
+class MptForCausalLM(MptPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config: MptConfig):
@@ -525,43 +517,6 @@ class MptForCausalLM(MptPreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings: torch.Tensor):
         self.lm_head = new_embeddings
-
-    def prepare_inputs_for_generation(
-        self,
-        input_ids: torch.LongTensor,
-        past_key_values: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        inputs_embeds: Optional[torch.Tensor] = None,
-        use_cache: Optional[bool] = None,
-        **kwargs,
-    ) -> dict:
-        # only last tokens for input_ids if past is not None
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,  # NITS should it be layer_past?
-                "use_cache": use_cache,
-                "attention_mask": attention_mask,
-            }
-        )
-        return model_inputs
 
     @add_start_docstrings_to_model_forward(MPT_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
@@ -729,10 +684,13 @@ class MptForSequenceClassification(MptPreTrainedModel):
             sequence_lengths = -1
         else:
             if input_ids is not None:
-                sequence_lengths = (torch.ne(input_ids, self.config.pad_token_id).sum(-1) - 1).to(logits.device)
+                # if no pad token found, use modulo instead of reverse indexing for ONNX compatibility
+                sequence_lengths = torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+                sequence_lengths = sequence_lengths % input_ids.shape[-1]
+                sequence_lengths = sequence_lengths.to(logits.device)
             else:
                 sequence_lengths = -1
-                logger.warning(
+                logger.warning_once(
                     f"{self.__class__.__name__} will not detect padding tokens in `inputs_embeds`. Results may be "
                     "unexpected if using padding tokens in conjunction with `inputs_embeds.`"
                 )

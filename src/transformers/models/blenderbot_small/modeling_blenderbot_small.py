@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch BlenderbotSmall model."""
-
+"""PyTorch BlenderbotSmall model."""
 
 import copy
 import math
@@ -25,6 +24,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from ...activations import ACT2FN
+from ...generation import GenerationMixin
 from ...modeling_attn_mask_utils import _prepare_4d_attention_mask, _prepare_4d_causal_attention_mask
 from ...modeling_outputs import (
     BaseModelOutput,
@@ -47,12 +47,6 @@ from .configuration_blenderbot_small import BlenderbotSmallConfig
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "BlenderbotSmallConfig"
-
-
-BLENDERBOT_SMALL_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "facebook/blenderbot_small-90M",
-    # See all BlenderbotSmall models at https://huggingface.co/models?filter=blenderbot_small
-]
 
 
 # Copied from transformers.models.bart.modeling_bart.shift_tokens_right
@@ -254,9 +248,8 @@ class BlenderbotSmallEncoderLayer(nn.Module):
     def __init__(self, config: BlenderbotSmallConfig):
         super().__init__()
         self.embed_dim = config.d_model
-        attn_type = "flash_attention_2" if getattr(config, "_flash_attn_2_enabled", False) else "default"
 
-        self.self_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[attn_type](
+        self.self_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[config._attn_implementation](
             embed_dim=self.embed_dim,
             num_heads=config.encoder_attention_heads,
             dropout=config.attention_dropout,
@@ -321,7 +314,10 @@ class BlenderbotSmallEncoderLayer(nn.Module):
         return outputs
 
 
-BLENDERBOT_SMALL_ATTENTION_CLASSES = {"default": BlenderbotSmallAttention}
+# TODO: Implement attention with SDPA for TimeSeriesTransformer.
+BLENDERBOT_SMALL_ATTENTION_CLASSES = {
+    "eager": BlenderbotSmallAttention,
+}
 
 
 # Copied from transformers.models.bart.modeling_bart.BartDecoderLayer with Bart->BlenderbotSmall, BART->BLENDERBOT_SMALL
@@ -330,8 +326,7 @@ class BlenderbotSmallDecoderLayer(nn.Module):
         super().__init__()
         self.embed_dim = config.d_model
 
-        attn_type = "flash_attention_2" if getattr(config, "_flash_attn_2_enabled", False) else "default"
-        self.self_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[attn_type](
+        self.self_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[config._attn_implementation](
             embed_dim=self.embed_dim,
             num_heads=config.decoder_attention_heads,
             dropout=config.attention_dropout,
@@ -344,7 +339,7 @@ class BlenderbotSmallDecoderLayer(nn.Module):
         self.activation_dropout = config.activation_dropout
 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
-        self.encoder_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[attn_type](
+        self.encoder_attn = BLENDERBOT_SMALL_ATTENTION_CLASSES[config._attn_implementation](
             self.embed_dim,
             config.decoder_attention_heads,
             dropout=config.attention_dropout,
@@ -588,10 +583,11 @@ BLENDERBOT_SMALL_INPUTS_DOCSTRING = r"""
 
             If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
             don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of shape
-            `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing `input_ids` you
-            can choose to directly pass an embedded representation. This is useful if you want more control over how to
-            convert `input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+            than the model's internal embedding lookup matrix.
         decoder_inputs_embeds (`torch.FloatTensor` of shape `(batch_size, target_sequence_length, hidden_size)`, *optional*):
             Optionally, instead of passing `decoder_input_ids` you can choose to directly pass an embedded
             representation. If `past_key_values` is used, optionally only the last `decoder_inputs_embeds` have to be
@@ -888,11 +884,11 @@ class BlenderbotSmallDecoder(BlenderbotSmallPreTrainedModel):
 
                 If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those
                 that don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of
-                all `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of
-                shape `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing
-                `input_ids` you can choose to directly pass an embedded representation. This is useful if you want more
-                control over how to convert `input_ids` indices into associated vectors than the model's internal
-                embedding lookup matrix.
+                all `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+                Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+                This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+                than the model's internal embedding lookup matrix.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
@@ -1168,7 +1164,7 @@ class BlenderbotSmallModel(BlenderbotSmallPreTrainedModel):
     "The BlenderbotSmall Model with a language modeling head. Can be used for summarization.",
     BLENDERBOT_SMALL_START_DOCSTRING,
 )
-class BlenderbotSmallForConditionalGeneration(BlenderbotSmallPreTrainedModel):
+class BlenderbotSmallForConditionalGeneration(BlenderbotSmallPreTrainedModel, GenerationMixin):
     base_model_prefix = "model"
     _keys_to_ignore_on_load_missing = ["final_logits_bias"]
     _tied_weights_keys = ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "lm_head.weight"]
@@ -1289,43 +1285,6 @@ class BlenderbotSmallForConditionalGeneration(BlenderbotSmallPreTrainedModel):
             encoder_attentions=outputs.encoder_attentions,
         )
 
-    def prepare_inputs_for_generation(
-        self,
-        decoder_input_ids,
-        past_key_values=None,
-        attention_mask=None,
-        head_mask=None,
-        decoder_head_mask=None,
-        cross_attn_head_mask=None,
-        use_cache=None,
-        encoder_outputs=None,
-        **kwargs,
-    ):
-        # cut decoder_input_ids if past is used
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if decoder_input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = decoder_input_ids.shape[1] - 1
-
-            decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
-
-        return {
-            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": past_key_values,
-            "decoder_input_ids": decoder_input_ids,
-            "attention_mask": attention_mask,
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
-        }
-
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
         reordered_past = ()
@@ -1354,7 +1313,7 @@ class BlenderbotSmallDecoderWrapper(BlenderbotSmallPreTrainedModel):
 
 
 # Copied from transformers.models.bart.modeling_bart.BartForCausalLM with Bart->BlenderbotSmall, facebook/bart-base->facebook/blenderbot_small-90M
-class BlenderbotSmallForCausalLM(BlenderbotSmallPreTrainedModel):
+class BlenderbotSmallForCausalLM(BlenderbotSmallPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -1478,9 +1437,7 @@ class BlenderbotSmallForCausalLM(BlenderbotSmallPreTrainedModel):
         >>> from transformers import AutoTokenizer, BlenderbotSmallForCausalLM
 
         >>> tokenizer = AutoTokenizer.from_pretrained("facebook/blenderbot_small-90M")
-        >>> model = BlenderbotSmallForCausalLM.from_pretrained(
-        ...     "facebook/blenderbot_small-90M", add_cross_attention=False
-        ... )
+        >>> model = BlenderbotSmallForCausalLM.from_pretrained("facebook/blenderbot_small-90M", add_cross_attention=False)
         >>> assert model.config.is_decoder, f"{model.__class__} has to be configured as a decoder."
         >>> inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
         >>> outputs = model(**inputs)
@@ -1533,32 +1490,6 @@ class BlenderbotSmallForCausalLM(BlenderbotSmallPreTrainedModel):
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
         )
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, use_cache=None, **kwargs
-    ):
-        # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
-        if attention_mask is None:
-            attention_mask = input_ids.new_ones(input_ids.shape)
-
-        if past_key_values:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-        # first step, decoder_cached_states are empty
-        return {
-            "input_ids": input_ids,  # encoder_outputs is defined. input_ids not needed
-            "attention_mask": attention_mask,
-            "past_key_values": past_key_values,
-            "use_cache": use_cache,
-        }
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):

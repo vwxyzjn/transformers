@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch XGLM model."""
-
+"""PyTorch XGLM model."""
 
 import math
 from typing import List, Optional, Tuple, Union
@@ -24,6 +23,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from ...activations import ACT2FN
+from ...generation import GenerationMixin
 from ...modeling_attn_mask_utils import _prepare_4d_attention_mask, _prepare_4d_causal_attention_mask
 from ...modeling_outputs import BaseModelOutputWithPastAndCrossAttentions, CausalLMOutputWithCrossAttentions
 from ...modeling_utils import PreTrainedModel
@@ -36,11 +36,6 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "facebook/xglm-564M"
 _CONFIG_FOR_DOC = "XGLMConfig"
 
-
-XGLM_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "facebook/xglm-564M",
-    # See all XGLM models at https://huggingface.co/models?filter=xglm
-]
 
 XGLM_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -113,10 +108,11 @@ XGLM_INPUTS_DOCSTRING = r"""
 
             If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
             don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of shape
-            `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing `input_ids` you
-            can choose to directly pass an embedded representation. This is useful if you want more control over how to
-            convert `input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+            than the model's internal embedding lookup matrix.
         output_attentions (`bool`, *optional*):
             Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
             tensors for more detail.
@@ -126,6 +122,20 @@ XGLM_INPUTS_DOCSTRING = r"""
         return_dict (`bool`, *optional*):
             Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
 """
+
+
+# Copied from transformers.models.bart.modeling_bart.BartScaledWordEmbedding with Bart->XGLM
+class XGLMScaledWordEmbedding(nn.Embedding):
+    """
+    This module overrides nn.Embeddings' forward by multiplying with embeddings scale.
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int, embed_scale: Optional[float] = 1.0):
+        super().__init__(num_embeddings, embedding_dim, padding_idx)
+        self.embed_scale = embed_scale
+
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids) * self.embed_scale
 
 
 class XGLMSinusoidalPositionalEmbedding(nn.Module):
@@ -156,8 +166,8 @@ class XGLMSinusoidalPositionalEmbedding(nn.Module):
         """
         half_dim = embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, dtype=torch.float) * -emb)
-        emb = torch.arange(num_embeddings, dtype=torch.float).unsqueeze(1) * emb.unsqueeze(0)
+        emb = torch.exp(torch.arange(half_dim, dtype=torch.int64).float() * -emb)
+        emb = torch.arange(num_embeddings, dtype=torch.int64).float().unsqueeze(1) * emb.unsqueeze(0)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1).view(num_embeddings, -1)
         if embedding_dim % 2 == 1:
             # zero pad
@@ -491,12 +501,14 @@ class XGLMModel(XGLMPreTrainedModel):
         self.layerdrop = config.layerdrop
         self.padding_idx = config.pad_token_id
         self.max_target_positions = config.max_position_embeddings
-        self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
+        embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
 
         if embed_tokens is not None:
             self.embed_tokens = embed_tokens
         else:
-            self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
+            self.embed_tokens = XGLMScaledWordEmbedding(
+                config.vocab_size, config.d_model, self.padding_idx, embed_scale=embed_scale
+            )
 
         self.embed_positions = XGLMSinusoidalPositionalEmbedding(
             config.max_position_embeddings,
@@ -569,7 +581,7 @@ class XGLMModel(XGLMPreTrainedModel):
             position_ids = position_ids.unsqueeze(0)
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
 
         attention_mask = _prepare_4d_causal_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
@@ -685,7 +697,7 @@ class XGLMModel(XGLMPreTrainedModel):
     """,
     XGLM_START_DOCSTRING,
 )
-class XGLMForCausalLM(XGLMPreTrainedModel):
+class XGLMForCausalLM(XGLMPreTrainedModel, GenerationMixin):
     base_model_prefix = "model"
     _tied_weights_keys = ["lm_head.weight"]
 
@@ -786,42 +798,6 @@ class XGLMForCausalLM(XGLMPreTrainedModel):
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
         )
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, use_cache=None, **kwargs
-    ):
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        position_ids = kwargs.get("position_ids", None)
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
-        else:
-            position_ids = None
-            # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
-            if attention_mask is None:
-                attention_mask = input_ids.new_ones(input_ids.shape)
-        # first step, decoder_cached_states are empty
-        return {
-            "input_ids": input_ids,  # encoder_outputs is defined. input_ids not needed
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "past_key_values": past_key_values,
-            "use_cache": use_cache,
-        }
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):

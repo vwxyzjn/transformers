@@ -42,7 +42,6 @@ Enable BetterTransformer with the [`PreTrainedModel.to_bettertransformer`] metho
 from transformers import AutoModelForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained("bigcode/starcoder")
-model.to_bettertransformer()
 ```
 
 ## TorchScript
@@ -54,7 +53,7 @@ For a gentle introduction to TorchScript, see the [Introduction to PyTorch Torch
 With the [`Trainer`] class, you can enable JIT mode for CPU inference by setting the `--jit_mode_eval` flag:
 
 ```bash
-python run_qa.py \
+python examples/pytorch/question-answering/run_qa.py \
 --model_name_or_path csarron/bert-base-uncased-squad-v1 \
 --dataset_name squad \
 --do_eval \
@@ -67,7 +66,7 @@ python run_qa.py \
 
 <Tip warning={true}>
 
-For PyTorch >= 1.14.0, JIT-mode could benefit any model for prediction and evaluaion since the dict input is supported in `jit.trace`.
+For PyTorch >= 1.14.0, JIT-mode could benefit any model for prediction and evaluation since the dict input is supported in `jit.trace`.
 
 For PyTorch < 1.14.0, JIT-mode could benefit a model if its forward parameter order matches the tuple input order in `jit.trace`, such as a question-answering model. If the forward parameter order does not match the tuple input order in `jit.trace`, like a text classification model, `jit.trace` will fail and we are capturing this with the exception here to make it fallback. Logging is used to notify users.
 
@@ -86,7 +85,7 @@ pip install intel_extension_for_pytorch
 Set the `--use_ipex` and `--jit_mode_eval` flags in the [`Trainer`] class to enable JIT mode with the graph optimizations:
 
 ```bash
-python run_qa.py \
+python examples/pytorch/question-answering/run_qa.py \
 --model_name_or_path csarron/bert-base-uncased-squad-v1 \
 --dataset_name squad \
 --do_eval \

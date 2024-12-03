@@ -79,6 +79,7 @@ class FlaxBertModelTester(unittest.TestCase):
         self.type_sequence_label_size = type_sequence_label_size
         self.initializer_range = initializer_range
         self.num_choices = num_choices
+        super().__init__()
 
     def prepare_config_and_inputs(self):
         input_ids = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
@@ -158,6 +159,6 @@ class FlaxBertModelTest(FlaxModelTesterMixin, unittest.TestCase):
     def test_model_from_pretrained(self):
         # Only check this for base model, not necessary for all model classes.
         # This will also help speed-up tests.
-        model = FlaxBertModel.from_pretrained("bert-base-cased")
+        model = FlaxBertModel.from_pretrained("google-bert/bert-base-cased")
         outputs = model(np.ones((1, 1)))
         self.assertIsNotNone(outputs)

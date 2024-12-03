@@ -386,9 +386,16 @@ class XmodModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
+        if pipeline_test_case_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
             return True
 
         return False
@@ -472,8 +479,7 @@ class XmodModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
         self.model_tester.create_and_check_for_question_answering(*config_and_inputs)
 
     def test_create_position_ids_respects_padding_index(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is XmodEmbeddings.padding_idx + 1
@@ -491,8 +497,7 @@ class XmodModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
         self.assertTrue(torch.all(torch.eq(position_ids, expected_positions)))
 
     def test_create_position_ids_from_inputs_embeds(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is XmodEmbeddings.padding_idx + 1
@@ -630,7 +635,7 @@ class XmodModelIntegrationTest(unittest.TestCase):
 
     @slow
     def test_end_to_end_mask_fill(self):
-        tokenizer = XLMRobertaTokenizer.from_pretrained("xlm-roberta-base")
+        tokenizer = XLMRobertaTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
         model = XmodForMaskedLM.from_pretrained("facebook/xmod-base", default_language="en_XX")
         model.to(torch_device)
 

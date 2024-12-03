@@ -185,7 +185,6 @@ class TFBlenderbotSmallModelTest(TFModelTesterMixin, PipelineTesterMixin, unitte
     all_generative_model_classes = (TFBlenderbotSmallForConditionalGeneration,) if is_tf_available() else ()
     pipeline_model_mapping = (
         {
-            "conversational": TFBlenderbotSmallForConditionalGeneration,
             "feature-extraction": TFBlenderbotSmallModel,
             "summarization": TFBlenderbotSmallForConditionalGeneration,
             "text2text-generation": TFBlenderbotSmallForConditionalGeneration,
@@ -199,9 +198,16 @@ class TFBlenderbotSmallModelTest(TFModelTesterMixin, PipelineTesterMixin, unitte
     test_onnx = False
 
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        return pipeline_test_casse_name in ("TextGenerationPipelineTests", "ConversationalPipelineTests")
+        return pipeline_test_case_name == "TextGenerationPipelineTests"
 
     def setUp(self):
         self.model_tester = TFBlenderbotSmallModelTester(self)

@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Fine-pruning Masked BERT on sequence classification on GLUE."""
+"""Fine-pruning Masked BERT on sequence classification on GLUE."""
 
 import argparse
 import glob
@@ -98,7 +98,7 @@ def regularization(model: nn.Module, mode: str):
             elif mode == "l0":
                 regu += torch.sigmoid(param - 2 / 3 * np.log(0.1 / 1.1)).sum() / param.numel()
             else:
-                ValueError("Don't know this mode.")
+                raise ValueError("Don't know this mode.")
             counter += 1
     return regu / counter
 
@@ -311,8 +311,7 @@ def train(args, train_dataset, model, tokenizer, teacher=None):
             tr_loss += loss.item()
             if (step + 1) % args.gradient_accumulation_steps == 0 or (
                 # last step in epoch but step is always smaller than gradient_accumulation_steps
-                len(epoch_iterator) <= args.gradient_accumulation_steps
-                and (step + 1) == len(epoch_iterator)
+                len(epoch_iterator) <= args.gradient_accumulation_steps and (step + 1) == len(epoch_iterator)
             ):
                 if args.fp16:
                     nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)

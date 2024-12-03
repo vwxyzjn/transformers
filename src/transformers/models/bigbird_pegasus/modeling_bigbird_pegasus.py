@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch BigBirdPegasus model."""
-
+"""PyTorch BigBirdPegasus model."""
 
 import copy
 import math
@@ -25,6 +24,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
+from ...generation import GenerationMixin
 from ...modeling_attn_mask_utils import _prepare_4d_attention_mask, _prepare_4d_causal_attention_mask
 from ...modeling_outputs import (
     BaseModelOutput,
@@ -52,14 +52,6 @@ logger = logging.get_logger(__name__)
 _CHECKPOINT_FOR_DOC = "google/bigbird-pegasus-large-arxiv"
 _CONFIG_FOR_DOC = "BigBirdPegasusConfig"
 _EXPECTED_OUTPUT_SHAPE = [1, 7, 1024]
-
-
-BIGBIRD_PEGASUS_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "google/bigbird-pegasus-large-arxiv",
-    "google/bigbird-pegasus-large-pubmed",
-    "google/bigbird-pegasus-large-bigpatent",
-    # See all BigBirdPegasus models at https://huggingface.co/models?filter=bigbird_pegasus
-]
 
 
 def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
@@ -93,6 +85,20 @@ class BigBirdPegasusLearnedPositionalEmbedding(nn.Embedding):
             past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
         )
         return super().forward(positions)
+
+
+# Copied from transformers.models.bart.modeling_bart.BartScaledWordEmbedding with Bart->BigBirdPegasus
+class BigBirdPegasusScaledWordEmbedding(nn.Embedding):
+    """
+    This module overrides nn.Embeddings' forward by multiplying with embeddings scale.
+    """
+
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int, embed_scale: Optional[float] = 1.0):
+        super().__init__(num_embeddings, embedding_dim, padding_idx)
+        self.embed_scale = embed_scale
+
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids) * self.embed_scale
 
 
 # Copied from transformers.models.big_bird.modeling_big_bird.BigBirdSelfAttention with BigBird->BigBirdPegasus
@@ -683,15 +689,11 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             # global keys (corresponding to 1st key block)
             attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, :to_block_size] = attn_weights[
                 :, :, :, :, :to_block_size
-            ].view(
-                bsz, n_heads, -1, to_block_size
-            )  # first_band_product
+            ].view(bsz, n_heads, -1, to_block_size)  # first_band_product
             # global keys (corresponding to last key block)
             attention_probs[:, :, 2 * from_block_size : -2 * from_block_size, -to_block_size:] = attn_weights[
                 :, :, :, :, -to_block_size:
-            ].view(
-                bsz, n_heads, -1, to_block_size
-            )  # last_band_product
+            ].view(bsz, n_heads, -1, to_block_size)  # last_band_product
             # random keys
             for p1, i1, w1 in zip(range(bsz), rand_attn, attn_weights):
                 # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
@@ -716,11 +718,9 @@ class BigBirdPegasusBlockSparseAttention(nn.Module):
             attention_probs[:, :, -2 * from_block_size : -from_block_size, :to_block_size] = second_last_attn_weights[
                 :, :, :, :to_block_size
             ]  # 1st key block (global)
-            attention_probs[
-                :, :, -2 * from_block_size : -from_block_size, -3 * to_block_size :
-            ] = second_last_attn_weights[
-                :, :, :, to_block_size : 4 * to_block_size
-            ]  # last three blocks (global + sliding)
+            attention_probs[:, :, -2 * from_block_size : -from_block_size, -3 * to_block_size :] = (
+                second_last_attn_weights[:, :, :, to_block_size : 4 * to_block_size]
+            )  # last three blocks (global + sliding)
             # random keys
             for p1, i1, w1 in zip(range(bsz), rand_attn, second_last_attn_weights):
                 # p1, i1, w1 corresponds to batch_dim i.e. following operation is done for each sequence in batch
@@ -1570,6 +1570,7 @@ class BigBirdPegasusPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["BigBirdPegasusEncoderLayer", "BigBirdPegasusDecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
+    _supports_param_buffer_assignment = False
 
     def _init_weights(self, module):
         std = self.config.init_std
@@ -1682,10 +1683,11 @@ BIGBIRD_PEGASUS_INPUTS_DOCSTRING = r"""
 
             If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
             don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
-            `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of shape
-            `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing `input_ids` you
-            can choose to directly pass an embedded representation. This is useful if you want more control over how to
-            convert `input_ids` indices into associated vectors than the model's internal embedding lookup matrix.
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+            This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+            than the model's internal embedding lookup matrix.
         decoder_inputs_embeds (`torch.FloatTensor` of shape `(batch_size, target_sequence_length, hidden_size)`, *optional*):
             Optionally, instead of passing `decoder_input_ids` you can choose to directly pass an embedded
             representation. If `past_key_values` is used, optionally only the last `decoder_inputs_embeds` have to be
@@ -1757,9 +1759,11 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
         embed_dim = config.d_model
         self.padding_idx = config.pad_token_id
         self.max_source_positions = config.max_position_embeddings
-        self.embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
+        embed_scale = math.sqrt(embed_dim) if config.scale_embedding else 1.0
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, embed_dim, self.padding_idx)
+        self.embed_tokens = BigBirdPegasusScaledWordEmbedding(
+            config.vocab_size, embed_dim, self.padding_idx, embed_scale=embed_scale
+        )
 
         if embed_tokens is not None:
             self.embed_tokens.weight = embed_tokens.weight
@@ -1835,7 +1839,7 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
 
         embed_pos = self.embed_positions(input_shape)
 
@@ -2018,7 +2022,7 @@ class BigBirdPegasusEncoder(BigBirdPegasusPreTrainedModel):
 
         padding_len = (block_size - seq_len % block_size) % block_size
         if padding_len > 0:
-            logger.info(
+            logger.warning_once(
                 f"Input ids are automatically padded from {seq_len} to {seq_len + padding_len} to be a multiple of "
                 f"`config.block_size`: {block_size}"
             )
@@ -2050,9 +2054,11 @@ class BigBirdPegasusDecoder(BigBirdPegasusPreTrainedModel):
         self.layerdrop = config.decoder_layerdrop
         self.padding_idx = config.pad_token_id
         self.max_target_positions = config.max_position_embeddings
-        self.embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
+        embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model, self.padding_idx)
+        self.embed_tokens = BigBirdPegasusScaledWordEmbedding(
+            config.vocab_size, config.d_model, self.padding_idx, embed_scale=embed_scale
+        )
 
         if embed_tokens is not None:
             self.embed_tokens.weight = embed_tokens.weight
@@ -2140,11 +2146,11 @@ class BigBirdPegasusDecoder(BigBirdPegasusPreTrainedModel):
 
                 If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those
                 that don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of
-                all `decoder_input_ids` of shape `(batch_size, sequence_length)`. inputs_embeds (`torch.FloatTensor` of
-                shape `(batch_size, sequence_length, hidden_size)`, *optional*): Optionally, instead of passing
-                `input_ids` you can choose to directly pass an embedded representation. This is useful if you want more
-                control over how to convert `input_ids` indices into associated vectors than the model's internal
-                embedding lookup matrix.
+                all `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+                Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation.
+                This is useful if you want more control over how to convert `input_ids` indices into associated vectors
+                than the model's internal embedding lookup matrix.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
@@ -2176,7 +2182,7 @@ class BigBirdPegasusDecoder(BigBirdPegasusPreTrainedModel):
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input_ids)
 
         attention_mask = _prepare_4d_causal_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
@@ -2300,7 +2306,10 @@ class BigBirdPegasusModel(BigBirdPegasusPreTrainedModel):
         super().__init__(config)
 
         padding_idx, vocab_size = config.pad_token_id, config.vocab_size
-        self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
+        embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
+        self.shared = BigBirdPegasusScaledWordEmbedding(
+            vocab_size, config.d_model, padding_idx, embed_scale=embed_scale
+        )
 
         self.encoder = BigBirdPegasusEncoder(config, self.shared)
         self.decoder = BigBirdPegasusDecoder(config, self.shared)
@@ -2428,7 +2437,7 @@ class BigBirdPegasusModel(BigBirdPegasusPreTrainedModel):
     BIGBIRD_PEGASUS_START_DOCSTRING,
 )
 # Copied from transformers.models.bart.modeling_bart.BartForConditionalGeneration with Bart->BigBirdPegasus, BART->BIGBIRD_PEGASUS
-class BigBirdPegasusForConditionalGeneration(BigBirdPegasusPreTrainedModel):
+class BigBirdPegasusForConditionalGeneration(BigBirdPegasusPreTrainedModel, GenerationMixin):
     base_model_prefix = "model"
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
     _keys_to_ignore_on_load_missing = ["final_logits_bias"]
@@ -2551,45 +2560,6 @@ class BigBirdPegasusForConditionalGeneration(BigBirdPegasusPreTrainedModel):
             encoder_hidden_states=outputs.encoder_hidden_states,
             encoder_attentions=outputs.encoder_attentions,
         )
-
-    def prepare_inputs_for_generation(
-        self,
-        decoder_input_ids,
-        past_key_values=None,
-        attention_mask=None,
-        decoder_attention_mask=None,
-        head_mask=None,
-        decoder_head_mask=None,
-        cross_attn_head_mask=None,
-        use_cache=None,
-        encoder_outputs=None,
-        **kwargs,
-    ):
-        # cut decoder_input_ids if past_key_values is used
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if decoder_input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = decoder_input_ids.shape[1] - 1
-
-            decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
-
-        return {
-            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": past_key_values,
-            "decoder_input_ids": decoder_input_ids,
-            "attention_mask": attention_mask,
-            "decoder_attention_mask": decoder_attention_mask,
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
-        }
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
@@ -2874,7 +2844,7 @@ class BigBirdPegasusDecoderWrapper(BigBirdPegasusPreTrainedModel):
         return self.decoder(*args, **kwargs)
 
 
-class BigBirdPegasusForCausalLM(BigBirdPegasusPreTrainedModel):
+class BigBirdPegasusForCausalLM(BigBirdPegasusPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -3049,23 +3019,6 @@ class BigBirdPegasusForCausalLM(BigBirdPegasusPreTrainedModel):
             attentions=outputs.attentions,
             cross_attentions=outputs.cross_attentions,
         )
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, use_cache=None, **kwargs
-    ):
-        # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
-        if attention_mask is None:
-            attention_mask = input_ids.new_ones(input_ids.shape)
-
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-        # first step, decoder_cached_states are empty
-        return {
-            "input_ids": input_ids,  # encoder_outputs is defined. input_ids not needed
-            "attention_mask": attention_mask,
-            "past_key_values": past_key_values,
-            "use_cache": use_cache,
-        }
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):

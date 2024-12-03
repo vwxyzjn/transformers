@@ -15,7 +15,7 @@ rendered properly in your Markdown viewer.
 
 # Hyperparameter Search using Trainer API
 
-🤗 Transformers provides a [`Trainer`] class optimized for training 🤗 Transformers models, making it easier to start training without manually writing your own training loop. The [`Trainer`] provides API for hyperparameter search. This doc shows how to enable it in example. 
+🤗 Transformers provides a [`Trainer`] class optimized for training 🤗 Transformers models, making it easier to start training without manually writing your own training loop. The [`Trainer`] provides API for hyperparameter search. This doc shows how to enable it in example.
 
 ## Hyperparameter Search backend
 
@@ -24,7 +24,7 @@ rendered properly in your Markdown viewer.
 
 you should install them before using them as the hyperparameter search backend
 ```bash
-pip install optuna/sigopt/wandb/ray[tune] 
+pip install optuna/sigopt/wandb/ray[tune]
 ```
 
 ## How to enable Hyperparameter search in example
@@ -99,7 +99,7 @@ Define a `model_init` function and pass it to the [`Trainer`], as an example:
 ...         config=config,
 ...         cache_dir=model_args.cache_dir,
 ...         revision=model_args.model_revision,
-...         use_auth_token=True if model_args.use_auth_token else None,
+...         token=True if model_args.use_auth_token else None,
 ...     )
 ```
 
@@ -112,7 +112,7 @@ Create a [`Trainer`] with your `model_init` function, training arguments, traini
 ...     train_dataset=small_train_dataset,
 ...     eval_dataset=small_eval_dataset,
 ...     compute_metrics=compute_metrics,
-...     tokenizer=tokenizer,
+...     processing_class=tokenizer,
 ...     model_init=model_init,
 ...     data_collator=data_collator,
 ... )

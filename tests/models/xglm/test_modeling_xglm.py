@@ -14,12 +14,12 @@
 # limitations under the License.
 
 import datetime
-import gc
 import math
 import unittest
 
 from transformers import XGLMConfig, is_torch_available
 from transformers.testing_utils import (
+    cleanup,
     require_torch,
     require_torch_accelerator,
     require_torch_fp16,
@@ -29,14 +29,14 @@ from transformers.testing_utils import (
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
-from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor, random_attention_mask
+from ...test_modeling_common import ModelTesterMixin, ids_tensor, random_attention_mask
 from ...test_pipeline_mixin import PipelineTesterMixin
 
 
 if is_torch_available():
     import torch
 
-    from transformers import XGLM_PRETRAINED_MODEL_ARCHIVE_LIST, XGLMForCausalLM, XGLMModel, XGLMTokenizer
+    from transformers import XGLMForCausalLM, XGLMModel, XGLMTokenizer
 
 
 class XGLMModelTester:
@@ -123,26 +123,6 @@ class XGLMModelTester:
             eos_token_id=self.eos_token_id,
             pad_token_id=self.pad_token_id,
             gradient_checkpointing=gradient_checkpointing,
-        )
-
-    def prepare_config_and_inputs_for_decoder(self):
-        (
-            config,
-            input_ids,
-            input_mask,
-            head_mask,
-        ) = self.prepare_config_and_inputs()
-
-        encoder_hidden_states = floats_tensor([self.batch_size, self.seq_length, self.hidden_size])
-        encoder_attention_mask = ids_tensor([self.batch_size, self.seq_length], vocab_size=2)
-
-        return (
-            config,
-            input_ids,
-            input_mask,
-            head_mask,
-            encoder_hidden_states,
-            encoder_attention_mask,
         )
 
     def create_and_check_xglm_model(self, config, input_ids, input_mask, head_mask, *args):
@@ -349,11 +329,11 @@ class XGLMModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in XGLM_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = XGLMModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "facebook/xglm-564M"
+        model = XGLMModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
-    @unittest.skip("Does not work on the tiny model as we keep hitting edge cases.")
+    @unittest.skip(reason="Does not work on the tiny model as we keep hitting edge cases.")
     def test_model_parallelism(self):
         super().test_model_parallelism()
 
@@ -363,8 +343,7 @@ class XGLMModelLanguageGenerationTest(unittest.TestCase):
     def tearDown(self):
         super().tearDown()
         # clean-up as much as possible GPU memory occupied by PyTorch
-        gc.collect()
-        torch.cuda.empty_cache()
+        cleanup(torch_device, gc_collect=True)
 
     def _test_lm_generate_xglm_helper(
         self,
@@ -379,9 +358,7 @@ class XGLMModelLanguageGenerationTest(unittest.TestCase):
         model.to(torch_device)
         input_ids = torch.tensor([[2, 268, 9865]], dtype=torch.long, device=torch_device)  # The dog
         # </s> The dog is a very friendly dog. He is very affectionate and loves to play with other
-        # fmt: off
-        expected_output_ids = [2, 268, 9865, 67, 11, 1988, 57252, 9865, 5, 984, 67, 1988, 213838, 1658, 53, 70446, 33, 6657, 278, 1581]
-        # fmt: on
+        expected_output_ids = [2, 268, 9865, 67, 11, 1988, 57252, 9865, 5, 984, 67, 1988, 213838, 1658, 53, 70446, 33, 6657, 278, 1581]  # fmt: skip
         output_ids = model.generate(input_ids, do_sample=False, num_beams=1)
         if verify_outputs:
             self.assertListEqual(output_ids[0].tolist(), expected_output_ids)

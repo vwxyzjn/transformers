@@ -12,21 +12,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch Idefics model. """
+"""Testing suite for the PyTorch Idefics model."""
 
+import inspect
 import unittest
+
+import pytest
+from parameterized import parameterized
 
 from transformers import BitsAndBytesConfig, IdeficsConfig, is_torch_available, is_vision_available
 from transformers.testing_utils import (
     TestCasePlus,
+    is_pt_tf_cross_test,
     require_bitsandbytes,
     require_torch,
+    require_torch_sdpa,
     require_vision,
     slow,
     torch_device,
 )
 from transformers.utils import cached_property
 
+from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor, random_attention_mask
 from ...test_pipeline_mixin import PipelineTesterMixin
@@ -37,7 +44,6 @@ if is_torch_available():
 
     from transformers import IdeficsForVisionText2Text, IdeficsModel, IdeficsProcessor
     from transformers.models.idefics.configuration_idefics import IdeficsPerceiverConfig, IdeficsVisionConfig
-    from transformers.models.idefics.modeling_idefics import IDEFICS_PRETRAINED_MODEL_ARCHIVE_LIST
     from transformers.pytorch_utils import is_torch_greater_or_equal_than_2_0
 else:
     is_torch_greater_or_equal_than_2_0 = False
@@ -71,6 +77,7 @@ class IdeficsModelTester:
         type_vocab_size=16,
         type_sequence_label_size=2,
         initializer_range=0.02,
+        alpha_initializer="ones",
         num_labels=3,
         scope=None,
         modality_type_vocab_size=2,
@@ -108,6 +115,7 @@ class IdeficsModelTester:
         self.type_vocab_size = type_vocab_size
         self.type_sequence_label_size = type_sequence_label_size
         self.initializer_range = initializer_range
+        self.alpha_initializer = alpha_initializer
         self.num_labels = num_labels
         self.scope = scope
         self.modality_type_vocab_size = modality_type_vocab_size
@@ -126,7 +134,7 @@ class IdeficsModelTester:
             num_attention_heads=self.vision_num_attention_heads,
             num_hidden_layers=self.vision_num_hidden_layers,
             intermediate_size=self.vision_intermediate_size,
-        )
+        ).to_dict()
 
         self.perceiver_qk_layer_norms_perceiver = perceiver_qk_layer_norms_perceiver
         self.perceiver_resampler_depth = perceiver_resampler_depth
@@ -167,6 +175,57 @@ class IdeficsModelTester:
         config = self.get_config()
         return (config, input_ids, input_mask, pixel_values, image_attention_mask, interpolate_pos_encoding)
 
+    def prepare_config_and_inputs_gate_tests(self):
+        # Create a list of configs and inputs, to test 2 things:
+        # 1. For the same image, the output should be different when image_attention_mask is filled with 0s vs filled with 1s.
+        # 2. For 2 different images, the output should be the same when image_attention_mask is filled with 0s.
+
+        interpolate_pos_encoding = False
+        input_ids = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
+        pixel_values = floats_tensor(
+            [
+                self.batch_size,
+                1,
+                self.num_channels,
+                self.image_size,
+                self.image_size,
+            ]
+        )
+        pixel_values_list = [
+            pixel_values.clone(),
+            pixel_values.clone(),
+            pixel_values.clone().fill_(0.6),
+            pixel_values.clone().fill_(0.3),
+        ]
+        attention_mask = None
+        if self.use_input_mask:
+            attention_mask = random_attention_mask([self.batch_size, self.seq_length])
+
+        image_attention_mask = random_attention_mask([self.batch_size, self.seq_length, 1])
+        image_attention_mask_list = [
+            image_attention_mask.clone().fill_(0),
+            image_attention_mask.clone().fill_(1),
+            image_attention_mask.clone().fill_(0),
+            image_attention_mask.clone().fill_(0),
+        ]
+
+        config = self.get_config()
+        inputs_list = []
+        for pixel_values, image_attention_mask in zip(pixel_values_list, image_attention_mask_list):
+            inputs_list.append(
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "pixel_values": pixel_values,
+                    "image_attention_mask": image_attention_mask,
+                    "interpolate_pos_encoding": interpolate_pos_encoding,
+                }
+            )
+
+        inputs_w_same_img = inputs_list[:2]
+        inputs_w_0_img_attn = inputs_list[2:]
+        return config, inputs_w_same_img, inputs_w_0_img_attn
+
     def get_config(self):
         return IdeficsConfig(
             image_size=self.image_size,
@@ -184,6 +243,7 @@ class IdeficsModelTester:
             type_vocab_size=self.type_vocab_size,
             is_decoder=False,
             initializer_range=self.initializer_range,
+            alpha_initializer=self.alpha_initializer,
             num_labels=self.num_labels,
             modality_type_vocab_size=self.modality_type_vocab_size,
             vision_config=self.vision_config,
@@ -255,12 +315,27 @@ class IdeficsModelTester:
     def prepare_pixel_values(self):
         return floats_tensor([self.batch_size, self.num_channels, self.image_size, self.image_size])
 
+    @require_torch_sdpa
+    @parameterized.expand([("float16",), ("bfloat16",), ("float32",)])
+    def test_eager_matches_sdpa_inference(self, torch_dtype: str):
+        self.skipTest(reason="Idefics has a hard requirement on SDPA, skipping this test")
+
+    @require_torch_sdpa
+    @slow
+    @parameterized.expand([("float16",), ("bfloat16",), ("float32",)])
+    def test_eager_matches_sdpa_generate(self):
+        self.skipTest(reason="Idefics has a hard requirement on SDPA, skipping this test")
+
 
 @unittest.skipIf(not is_torch_greater_or_equal_than_2_0, reason="pytorch 2.0 or higher is required")
 @require_torch
 class IdeficsModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
     all_model_classes = (IdeficsModel, IdeficsForVisionText2Text) if is_torch_available() else ()
-    pipeline_model_mapping = {"feature-extraction": IdeficsModel} if is_torch_available() else {}
+    pipeline_model_mapping = (
+        {"feature-extraction": IdeficsModel, "image-text-to-text": IdeficsForVisionText2Text}
+        if is_torch_available()
+        else {}
+    )
     test_pruning = False
     test_headmasking = False
     test_torchscript = False
@@ -276,6 +351,12 @@ class IdeficsModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
             )
 
         return inputs_dict
+
+    @parameterized.expand([("float16",), ("bfloat16",), ("float32",)])
+    @require_torch_sdpa
+    @unittest.skip("Idefics requires both text and image inputs which is currently not done in this test.")
+    def test_eager_matches_sdpa_inference(self):
+        pass
 
     def test_model_outputs_equivalence(self):
         try:
@@ -337,15 +418,35 @@ class IdeficsModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
         )
         self.model_tester.create_and_check_model_gen(*config_and_inputs)
 
+    def test_cross_attention_gates(self):
+        config, inputs_w_same_img, inputs_w_0_img_attn = self.model_tester.prepare_config_and_inputs_gate_tests()
+
+        model = IdeficsModel(config=config).to(torch_device)
+        model.eval()
+        test_1_results = []
+        for inputs in inputs_w_same_img:
+            with torch.no_grad():
+                last_hidden_states = model(**inputs).last_hidden_state
+            last_hidden_states = model(**inputs).last_hidden_state
+            test_1_results.append(last_hidden_states)
+        self.assertNotEqual(test_1_results[0].sum().item(), test_1_results[1].sum().item())
+
+        test_2_results = []
+        for inputs in inputs_w_0_img_attn:
+            with torch.no_grad():
+                last_hidden_states = model(**inputs).last_hidden_state
+            test_2_results.append(last_hidden_states)
+        self.assertEqual(test_2_results[0].sum().item(), test_2_results[1].sum().item())
+
     def test_training(self):
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         for model_class in self.all_model_classes:
             # IdeficsModel does not support training, users should use
             # IdeficsForVisionText2Text for this purpose
             if model_class == IdeficsModel:
-                return
+                self.skipTest(reason="IdeficsModel does not support training")
 
             config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
             config.return_dict = True
@@ -359,13 +460,13 @@ class IdeficsModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
 
     def test_training_gradient_checkpointing(self):
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         for model_class in self.all_model_classes:
             # IdeficsModel does not support training, users should use
             # IdeficsForVisionText2Text for this purpose
             if model_class == IdeficsModel:
-                return
+                self.skipTest(reason="IdeficsModel does not support training")
 
             config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
             config.use_cache = False
@@ -477,17 +578,27 @@ class IdeficsModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
 
             check_hidden_states_output(inputs_dict, config, model_class)
 
+    @is_pt_tf_cross_test
+    def test_pt_tf_model_equivalence(self, allow_missing_keys=False):
+        self.has_attentions = False
+        super().test_pt_tf_model_equivalence(allow_missing_keys=allow_missing_keys)
+
     @slow
     def test_model_from_pretrained(self):
-        for model_name in IDEFICS_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = IdeficsModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "HuggingFaceM4/idefics-9b"
+        model = IdeficsModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
+
+    @unittest.skip("Idefics has a hard requirement on SDPA")
+    def test_sdpa_can_dispatch_non_composite_models(self):
+        pass
 
 
 @unittest.skipIf(not is_torch_greater_or_equal_than_2_0, reason="pytorch 2.0 or higher is required")
 @require_torch
-class IdeficsForVisionText2TextTest(IdeficsModelTest, unittest.TestCase):
+class IdeficsForVisionText2TextTest(IdeficsModelTest, GenerationTesterMixin, unittest.TestCase):
     all_model_classes = (IdeficsForVisionText2Text,) if is_torch_available() else ()
+    all_generative_model_classes = (IdeficsForVisionText2Text,) if is_torch_available() else ()
 
     def setUp(self):
         self.model_tester = IdeficsModelTester(
@@ -496,11 +607,193 @@ class IdeficsForVisionText2TextTest(IdeficsModelTest, unittest.TestCase):
         )
         self.config_tester = ConfigTester(self, config_class=IdeficsConfig, hidden_size=37)
 
-    @unittest.skip("We only test the model that takes in multiple images")
+    @parameterized.expand([("float16",), ("bfloat16",), ("float32",)])
+    @require_torch_sdpa
+    @unittest.skip("Idefics requires both text and image inputs which is currently not done in this test.")
+    def test_eager_matches_sdpa_inference(self, torch_dtype):
+        pass
+
+    @pytest.mark.generate
+    def test_left_padding_compatibility(self):
+        """Overwrite because IDEFICS needs image attention mask to be also padded"""
+        # NOTE: left-padding results in small numerical differences. This is expected.
+        # See https://github.com/huggingface/transformers/issues/25420#issuecomment-1775317535
+
+        def _prepare_model_kwargs(input_ids, attention_mask, image_attention_mask, signature):
+            model_kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "image_attention_mask": image_attention_mask,
+            }
+            if "position_ids" in signature:
+                position_ids = torch.cumsum(attention_mask, dim=-1) - 1
+                position_ids.masked_fill_(attention_mask == 0, 1)
+                model_kwargs["position_ids"] = position_ids
+            if "cache_position" in signature:
+                cache_position = torch.arange(input_ids.shape[-1], device=torch_device)
+                model_kwargs["cache_position"] = cache_position
+            return model_kwargs
+
+        for model_class in self.all_generative_model_classes:
+            config, inputs_dict = self.prepare_config_and_inputs_for_generate()
+            input_ids = inputs_dict.pop("input_ids")
+            attention_mask = inputs_dict.pop("attention_mask")
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids)
+            image_attention_mask = inputs_dict.pop("image_attention_mask", None)
+
+            model = model_class(config).to(torch_device).eval()
+            signature = inspect.signature(model.forward).parameters.keys()
+
+            # no cache as some models require special cache classes to be init outside forward
+            model.generation_config.use_cache = False
+
+            # Without padding
+            model_kwargs = _prepare_model_kwargs(input_ids, attention_mask, image_attention_mask, signature)
+            next_logits_wo_padding = model(**model_kwargs, **inputs_dict).logits[:, -1, :]
+
+            # With left-padding (length 32)
+            # can hardcode pad_token to be 0 as we'll do attn masking anyway
+            pad_token_id = (
+                config.get_text_config().pad_token_id if config.get_text_config().pad_token_id is not None else 0
+            )
+            pad_size = (input_ids.shape[0], 32)
+            padding = torch.ones(pad_size, dtype=input_ids.dtype, device=torch_device) * pad_token_id
+            padded_input_ids = torch.cat((padding, input_ids), dim=1)
+            padded_attention_mask = torch.cat((torch.zeros_like(padding), attention_mask), dim=1)
+
+            pad_size_img = (input_ids.shape[0], 32, image_attention_mask.shape[-1])
+            extra_img_mask = torch.zeros(pad_size_img, dtype=image_attention_mask.dtype, device=torch_device)
+            padded_image_attention_mask = torch.cat([extra_img_mask, image_attention_mask], dim=1)
+            model_kwargs = _prepare_model_kwargs(
+                padded_input_ids, padded_attention_mask, padded_image_attention_mask, signature
+            )
+            next_logits_with_padding = model(**model_kwargs, **inputs_dict).logits[:, -1, :]
+
+            # They should result in very similar logits
+            self.assertTrue(torch.allclose(next_logits_wo_padding, next_logits_with_padding, atol=1e-5))
+
+    @pytest.mark.generate
+    def test_generate_continue_from_past_key_values(self):
+        """Overwrite because IDEFICS needs image attention mask to be also processed"""
+
+        # Tests that we can continue generating from past key values, returned from a previous `generate` call
+        for model_class in self.all_generative_model_classes:
+            config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
+
+            # Let's make it always:
+            # 1. use cache (for obvious reasons)
+            # 2. generate to max length (which can be achieved by setting the eos token to an invalid value), which
+            #    would make the test flaky (e.g. EOS is generated on iteration 1 on both generations, but the
+            #    continuation would force it to generate beyond an EOS token)
+            # 3. ignore `token_type_ids` for simplicity
+            # 4. ignore `forced_eos_token_id`, which requires further manipulation of the continuation inputs and is
+            #    active by default on some models
+            # 5. ignore `encoder_no_repeat_ngram_size`, which is set by default in some encoder-decoder models. When
+            #    we use their decoder as a stand-alone model, `encoder_no_repeat_ngram_size` actually prevents
+            #    repetition exclusively from the prompt. This test relies on comparing one call vs 2 calls
+            #    with cache, what is considered a prompt is different in the two cases.
+
+            model = model_class(config).to(torch_device)
+            model.eval()
+            model.generation_config.pad_token_id = model.generation_config.eos_token_id = -1
+            model.generation_config.forced_eos_token_id = None
+            model.generation_config.encoder_no_repeat_ngram_size = 0
+            model.generation_config.use_cache = True
+
+            # Traditional way of generating text, with `return_dict_in_generate` to return the past key values
+            outputs = model.generate(**inputs, do_sample=False, max_new_tokens=4, return_dict_in_generate=True)
+
+            # Let's generate again, but passing the past key values in between (3 + 1 = 4 tokens). Note that the
+            # inputs may need to be tweaked across `generate` calls (like the attention mask).
+            outputs_cached = model.generate(**inputs, do_sample=False, max_new_tokens=3, return_dict_in_generate=True)
+
+            # Continue from the tokens generated above, preparing the inputs accordingly
+            inputs["past_key_values"] = outputs_cached.past_key_values
+            new_attention_len = outputs_cached.sequences.shape[-1]
+            inputs["input_ids"] = outputs_cached.sequences
+            if "attention_mask" in inputs:
+                inputs["attention_mask"] = torch.nn.functional.pad(
+                    inputs["attention_mask"],
+                    (0, new_attention_len - inputs["attention_mask"].shape[1]),
+                    mode="constant",
+                    value=1,
+                )
+            if "image_attention_mask" in inputs:
+                inputs["image_attention_mask"] = inputs["image_attention_mask"][:, -1:, :]
+
+            outputs_cached = model.generate(**inputs, do_sample=False, max_new_tokens=1, return_dict_in_generate=True)
+
+            # The two sets of generated text and past kv should be equal to each other
+            self.assertListEqual(outputs.sequences.tolist(), outputs_cached.sequences.tolist())
+            for layer_idx in range(len(outputs_cached.past_key_values)):
+                for kv_idx in range(len(outputs_cached.past_key_values[layer_idx])):
+                    self.assertTrue(
+                        torch.allclose(
+                            outputs.past_key_values[layer_idx][kv_idx],
+                            outputs_cached.past_key_values[layer_idx][kv_idx],
+                        )
+                    )
+
+    @pytest.mark.generate
+    def test_generate_without_input_ids(self):
+        """Overwrite because IDEFICS needs image attention mask to be also processed and requires image at input always."""
+
+        config, input_dict = self.prepare_config_and_inputs_for_generate()
+        pixel_values = input_dict["pixel_values"]
+        image_attention_mask = input_dict["image_attention_mask"][:, -1:, :]
+
+        # hack in case they are equal, otherwise the attn mask will be [0]
+        if config.bos_token_id == config.pad_token_id:
+            config.pad_token_id = None
+
+        for model_class in self.all_generative_model_classes:
+            model = model_class(config).to(torch_device)
+            model.eval()
+
+            output_ids_generate = model.generate(
+                pixel_values=pixel_values,
+                image_attention_mask=image_attention_mask,
+                do_sample=False,
+                max_new_tokens=self.max_new_tokens,
+                remove_invalid_values=True,
+            )
+            self.assertIsNotNone(output_ids_generate)
+
+    def _check_attentions_for_generate(
+        self, batch_size, attentions, min_length, max_length, config, use_cache=False, num_beam_groups=1
+    ):
+        """
+        Overwrite from generation tests because Idefics has only SDPA layers.
+        Do not skip because we still want generation tests to run. Rather we can remove checks for shape.
+        """
+        pass
+
+    @unittest.skip(reason="Contrastive search is not implemented for VLMs that do cross-attn")
+    def test_contrastive_generate(self):
+        pass
+
+    @unittest.skip(reason="Contrastive search is not implemented for VLMs that do cross-attn")
+    def test_contrastive_generate_dict_outputs_use_cache(self):
+        pass
+
+    @unittest.skip(reason="Contrastive search is not implemented for VLMs that do cross-attn")
+    def test_contrastive_generate_low_memory(self):
+        pass
+
+    @unittest.skip(reason="We only test the model that takes in multiple images")
+    def test_custom_4d_attention_mask(self):
+        pass
+
+    @unittest.skip(reason="IDEFICS cannot compile due to dynamic control flow when checking inputs")
+    def test_generate_compile_fullgraph(self):
+        pass
+
+    @unittest.skip(reason="We only test the model that takes in multiple images")
     def test_model(self):
         pass
 
-    @unittest.skip("We only test the model that takes in multiple images")
+    @unittest.skip(reason="We only test the model that takes in multiple images")
     def test_for_token_classification(self):
         pass
 
@@ -518,6 +811,10 @@ class IdeficsForVisionText2TextTest(IdeficsModelTest, unittest.TestCase):
         reason="This architecure seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
     )
     def test_training_gradient_checkpointing_use_reentrant_false(self):
+        pass
+
+    @unittest.skip("Idefics has a hard requirement on SDPA")
+    def test_sdpa_can_dispatch_non_composite_models(self):
         pass
 
 
@@ -568,7 +865,7 @@ class IdeficsModelIntegrationTest(TestCasePlus):
             "HuggingFaceM4/idefics-9b", quantization_config=quantization_config, device_map="auto"
         )
         processor = self.default_processor
-        inputs = processor(prompts, return_tensors="pt").to(torch_device)
+        inputs = processor(text=prompts, return_tensors="pt", padding="longest").to(torch_device)
         generated_ids = model.generate(**inputs, max_length=100)
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)
 

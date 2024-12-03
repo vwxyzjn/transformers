@@ -27,6 +27,7 @@ from transformers.testing_utils import (
     require_sentencepiece,
     require_tokenizers,
     require_torch,
+    require_torch_gpu,
     slow,
     torch_device,
 )
@@ -44,6 +45,7 @@ if is_torch_fx_available():
 
 if is_torch_available():
     import torch
+    import torch.nn.functional as F
 
     from transformers import (
         AutoTokenizer,
@@ -52,10 +54,10 @@ if is_torch_available():
         T5ForConditionalGeneration,
         T5ForQuestionAnswering,
         T5ForSequenceClassification,
+        T5ForTokenClassification,
         T5Model,
         T5Tokenizer,
     )
-    from transformers.models.t5.modeling_t5 import T5_PRETRAINED_MODEL_ARCHIVE_LIST
 
 
 class T5ModelTester:
@@ -107,7 +109,7 @@ class T5ModelTester:
         self.decoder_layers = decoder_layers
 
     def get_large_model_config(self):
-        return T5Config.from_pretrained("t5-base")
+        return T5Config.from_pretrained("google-t5/t5-base")
 
     def prepare_config_and_inputs(self):
         input_ids = ids_tensor([self.batch_size, self.encoder_seq_length], self.vocab_size).clamp(2)
@@ -558,7 +560,6 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
     all_generative_model_classes = (T5ForConditionalGeneration,) if is_torch_available() else ()
     pipeline_model_mapping = (
         {
-            "conversational": T5ForConditionalGeneration,
             "feature-extraction": T5Model,
             "question-answering": T5ForQuestionAnswering,
             "summarization": T5ForConditionalGeneration,
@@ -577,7 +578,7 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
     test_model_parallel = True
     is_encoder_decoder = True
     # The small T5 model needs higher percentages for CPU/MP tests
-    model_split_percents = [0.8, 0.9]
+    model_split_percents = [0.5, 0.8, 0.9]
 
     def setUp(self):
         self.model_tester = T5ModelTester(self)
@@ -586,16 +587,25 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
     # `QAPipelineTests` is not working well with slow tokenizers (for some models) and we don't want to touch the file
     # `src/transformers/data/processors/squad.py` (where this test fails for this model)
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
+        if tokenizer_name is None:
+            return True
+        if pipeline_test_case_name == "QAPipelineTests" and not tokenizer_name.endswith("Fast"):
             return True
 
         return False
 
     def _create_and_check_torch_fx_tracing(self, config, inputs_dict, output_loss=False):
         if not is_torch_fx_available() or not self.fx_compatible:
-            return
+            self.skipTest(reason="torch.fx is not available or not compatible with this model")
 
         configs_no_init = _config_zero_init(config)  # To be sure we have no Nan
         configs_no_init.return_dict = False
@@ -622,12 +632,9 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
                     ]
                     if labels is not None:
                         input_names.append("labels")
-
                     filtered_inputs = {k: v for (k, v) in inputs.items() if k in input_names}
                     input_names = list(filtered_inputs.keys())
-
                     model_output = model(**filtered_inputs)
-
                     traced_model = symbolic_trace(model, input_names)
                     traced_output = traced_model(**filtered_inputs)
                 else:
@@ -642,7 +649,6 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
                         "visual_feats",
                         "visual_pos",
                     ]
-
                     labels = inputs.get("labels", None)
                     start_positions = inputs.get("start_positions", None)
                     end_positions = inputs.get("end_positions", None)
@@ -652,15 +658,12 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
                         input_names.append("start_positions")
                     if end_positions is not None:
                         input_names.append("end_positions")
-
                     filtered_inputs = {k: v for (k, v) in inputs.items() if k in input_names}
                     input_names = list(filtered_inputs.keys())
-
                     if model.__class__.__name__ in set(MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING_NAMES.values()) and (
                         not hasattr(model.config, "problem_type") or model.config.problem_type is None
                     ):
                         model.config.problem_type = "single_label_classification"
-
                     traced_model = symbolic_trace(model, input_names)
                     traced_output = traced_model(**filtered_inputs)
                     model_output = model(**filtered_inputs)
@@ -712,6 +715,41 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
             # Avoid memory leak. Without this, each call increase RAM usage by ~20MB.
             # (Even with this call, there are still memory leak by ~0.04MB)
             self.clear_torch_jit_class_registry()
+
+    # overwrite because T5 doesn't accept position ids as input and expects `decoder_input_ids`
+    def test_custom_4d_attention_mask(self):
+        for model_class in self.all_generative_model_classes:
+            config, input_dict = self.model_tester.prepare_config_and_inputs_for_common()
+            model = model_class(config).to(device=torch_device, dtype=torch.float32)
+
+            (
+                input_ids,
+                _,
+                input_ids_shared_prefix,
+                mask_shared_prefix,
+                _,
+            ) = self._get_custom_4d_mask_test_data()
+
+            logits = model.forward(
+                decoder_input_ids=input_ids,
+                input_ids=input_dict["input_ids"][:3],
+            ).logits
+            # logits.shape == torch.Size([3, 4, ...])
+
+            logits_shared_prefix = model(
+                input_ids=input_dict["input_ids"][:1],
+                decoder_input_ids=input_ids_shared_prefix,
+                decoder_attention_mask=mask_shared_prefix,
+            )[0]
+            # logits_shared_prefix.shape == torch.Size([1, 6, ...])
+
+            out_last_tokens = logits[:, -1, :]  # last tokens in each batch line
+            out_shared_prefix_last_tokens = logits_shared_prefix[0, -3:, :]  # last three tokens
+
+            # comparing softmax-normalized logits:
+            normalized_0 = F.softmax(out_last_tokens)
+            normalized_1 = F.softmax(out_shared_prefix_last_tokens)
+            torch.testing.assert_close(normalized_0, normalized_1, rtol=1e-3, atol=1e-4)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -835,11 +873,11 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in T5_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = T5Model.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "google-t5/t5-small"
+        model = T5Model.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
-    @unittest.skip("Test has a segmentation fault on torch 1.8.0")
+    @unittest.skip(reason="Test has a segmentation fault on torch 1.8.0")
     def test_export_to_onnx(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         model = T5Model(config_and_inputs[0]).to(torch_device)
@@ -887,14 +925,6 @@ class T5ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, 
             attn_weights = out[attn_name] if attn_name == attention_names[0] else out[attn_name][-1]
             self.assertEqual(sum([w.sum().item() for w in attn_weights]), 0.0)
 
-    @unittest.skip("Does not work on the tiny model as we keep hitting edge cases.")
-    def test_disk_offload(self):
-        pass
-
-    @unittest.skip("Does not support conversations.")
-    def test_pipeline_conversational(self):
-        pass
-
 
 class T5EncoderOnlyModelTester:
     def __init__(
@@ -939,7 +969,7 @@ class T5EncoderOnlyModelTester:
         self.is_training = is_training
 
     def get_large_model_config(self):
-        return T5Config.from_pretrained("t5-base")
+        return T5Config.from_pretrained("google-t5/t5-base")
 
     def prepare_config_and_inputs(self):
         input_ids = ids_tensor([self.batch_size, self.encoder_seq_length], self.vocab_size)
@@ -998,6 +1028,22 @@ class T5EncoderOnlyModelTester:
         output = model(input_ids, attention_mask=attention_mask)["last_hidden_state"]
         self.parent.assertFalse(torch.isnan(output).any().item())
 
+    def create_and_check_with_token_classification_head(
+        self,
+        config,
+        input_ids,
+        attention_mask,
+    ):
+        labels = torch.tensor([1] * self.seq_length * self.batch_size, dtype=torch.long, device=torch_device)
+        model = T5ForTokenClassification(config=config).to(torch_device).eval()
+        outputs = model(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=attention_mask,
+        )
+        self.parent.assertEqual(outputs["logits"].size(), (self.batch_size, self.seq_length, config.num_labels))
+        self.parent.assertEqual(outputs["loss"].size(), ())
+
     def prepare_config_and_inputs_for_common(self):
         config_and_inputs = self.prepare_config_and_inputs()
         (
@@ -1013,11 +1059,18 @@ class T5EncoderOnlyModelTester:
         return config, inputs_dict
 
 
-class T5EncoderOnlyModelTest(ModelTesterMixin, unittest.TestCase):
-    all_model_classes = (T5EncoderModel,) if is_torch_available() else ()
+class T5EncoderOnlyModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
+    all_model_classes = (T5EncoderModel, T5ForTokenClassification) if is_torch_available() else ()
     test_pruning = False
     test_resize_embeddings = False
     test_model_parallel = True
+    pipeline_model_mapping = (
+        {
+            "token-classification": T5ForTokenClassification,
+        }
+        if is_torch_available()
+        else {}
+    )
     all_parallelizable_model_classes = (T5EncoderModel,) if is_torch_available() else ()
 
     def setUp(self):
@@ -1035,6 +1088,30 @@ class T5EncoderOnlyModelTest(ModelTesterMixin, unittest.TestCase):
     def test_model_fp16_forward(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model_fp16_forward(*config_and_inputs)
+
+    def test_with_token_classification_head(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_with_token_classification_head(*config_and_inputs)
+
+    def is_pipeline_test_to_skip(
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
+    ):
+        if tokenizer_name is None:
+            return True
+
+        # `T5EncoderOnlyModelTest` is not working well with slow tokenizers (for some models) and we don't want to touch the file
+        # `src/transformers/data/processors/squad.py` (where this test fails for this model)
+        if pipeline_test_case_name == "TokenClassificationPipelineTests" and not tokenizer_name.endswith("Fast"):
+            return True
+
+        return False
 
 
 def use_task_specific_params(model, task):
@@ -1066,36 +1143,40 @@ class T5ModelFp16Tests(unittest.TestCase):
         with unittest.mock.patch("builtins.__import__", side_effect=import_accelerate_mock):
             accelerate_available = False
 
-            model = T5ForConditionalGeneration.from_pretrained("t5-small", torch_dtype=torch.float16)
+            model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small", torch_dtype=torch.float16)
             self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.float32)
             self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.float16)
 
             # Load without in bf16
-            model = T5ForConditionalGeneration.from_pretrained("t5-small", torch_dtype=torch.bfloat16)
+            model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small", torch_dtype=torch.bfloat16)
             self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.bfloat16)
             self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.bfloat16)
 
         # Load using `accelerate` in bf16
-        model = T5ForConditionalGeneration.from_pretrained("t5-small", torch_dtype=torch.bfloat16, device_map="auto")
+        model = T5ForConditionalGeneration.from_pretrained(
+            "google-t5/t5-small", torch_dtype=torch.bfloat16, device_map="auto"
+        )
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.bfloat16)
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.bfloat16)
 
         # Load using `accelerate` in bf16
         model = T5ForConditionalGeneration.from_pretrained(
-            "t5-small", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
+            "google-t5/t5-small", torch_dtype=torch.bfloat16, low_cpu_mem_usage=True
         )
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.bfloat16)
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.bfloat16)
 
         # Load without using `accelerate`
         model = T5ForConditionalGeneration.from_pretrained(
-            "t5-small", torch_dtype=torch.float16, low_cpu_mem_usage=True
+            "google-t5/t5-small", torch_dtype=torch.float16, low_cpu_mem_usage=True
         )
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.float32)
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.float16)
 
         # Load using `accelerate`
-        model = T5ForConditionalGeneration.from_pretrained("t5-small", torch_dtype=torch.float16, device_map="auto")
+        model = T5ForConditionalGeneration.from_pretrained(
+            "google-t5/t5-small", torch_dtype=torch.float16, device_map="auto"
+        )
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wo.weight.dtype == torch.float32)
         self.assertTrue(model.decoder.block[0].layer[2].DenseReluDense.wi.weight.dtype == torch.float16)
 
@@ -1106,11 +1187,11 @@ class T5ModelFp16Tests(unittest.TestCase):
 class T5ModelIntegrationTests(unittest.TestCase):
     @cached_property
     def model(self):
-        return T5ForConditionalGeneration.from_pretrained("t5-base").to(torch_device)
+        return T5ForConditionalGeneration.from_pretrained("google-t5/t5-base").to(torch_device)
 
     @cached_property
     def tokenizer(self):
-        return T5Tokenizer.from_pretrained("t5-base")
+        return T5Tokenizer.from_pretrained("google-t5/t5-base")
 
     @slow
     def test_torch_quant(self):
@@ -1127,11 +1208,11 @@ class T5ModelIntegrationTests(unittest.TestCase):
 
     @slow
     def test_small_generation(self):
-        model = T5ForConditionalGeneration.from_pretrained("t5-small").to(torch_device)
+        model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small").to(torch_device)
         model.config.max_length = 8
         model.config.num_beams = 1
         model.config.do_sample = False
-        tokenizer = T5Tokenizer.from_pretrained("t5-small")
+        tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small")
 
         input_ids = tokenizer("summarize: Hello there", return_tensors="pt").input_ids.to(torch_device)
 
@@ -1154,8 +1235,8 @@ class T5ModelIntegrationTests(unittest.TestCase):
         >>> score = t5_model.score(inputs=["Hello there"], targets=["Hi I am"], vocabulary=vocab)
         """
 
-        model = T5ForConditionalGeneration.from_pretrained("t5-small").to(torch_device)
-        tokenizer = T5Tokenizer.from_pretrained("t5-small")
+        model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small").to(torch_device)
+        tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small")
 
         input_ids = tokenizer("Hello there", return_tensors="pt").input_ids
         labels = tokenizer("Hi I am", return_tensors="pt").input_ids
@@ -1431,6 +1512,7 @@ class T5ModelIntegrationTests(unittest.TestCase):
             [model.config.prefix + x for x in [FRANCE_ARTICLE, SHORTER_ARTICLE, IRAN_ARTICLE, ARTICLE_SUBWAY]],
             padding="max_length",
             truncation=True,
+            max_length=512,
             return_tensors="pt",
         ).to(torch_device)
         self.assertEqual(512, dct["input_ids"].shape[1])
@@ -1471,7 +1553,7 @@ class T5ModelIntegrationTests(unittest.TestCase):
 
     @slow
     def test_translation_en_to_fr(self):
-        model = self.model  # t5-base
+        model = self.model  # google-t5/t5-base
         tok = self.tokenizer
         use_task_specific_params(model, "translation_en_to_fr")
 
@@ -1553,13 +1635,75 @@ class T5ModelIntegrationTests(unittest.TestCase):
         outputs = t5_model.generate(input_ids, penalty_alpha=0.5, top_k=5, max_length=64)
         generated_text = t5_tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
+        # TODO: @arthur?
+        # PR #31938 caused regression on this test which was fixed by PR #34089
         self.assertListEqual(
             generated_text,
             [
-                "Liana Barrientos has been married 10 times, nine of them in the Bronx. Her husbands filed for "
-                "permanent residence after the marriages, prosecutors say."
+                "Liana Barrientos has been married 10 times, nine of them in the Bronx . Her husbands filed for "
+                "permanent residence after the marriages, prosecutors say ."
             ],
         )
+
+    @slow
+    @require_torch_gpu
+    def test_compile_static_cache(self):
+        NUM_TOKENS_TO_GENERATE = 40
+        EXPECTED_TEXT_COMPLETION = [
+            "theory of relativity states that 1) the speed of light is constant in all inertial reference frames. the laws of physics are the same for all inertial reference frames.",
+            "ketchup is my favorite condiment.",
+        ]
+
+        prompts = [
+            "summarize: Simply put, the theory of relativity states that 1) the speed of light is constant in all inertial "
+            "reference frames, and 2) the laws of physics are the same for all inertial reference frames.\nThe "
+            "theory of relativity is not hard to grasp.",
+            "summarize: My favorite all time favorite condiment is ketchup. I love it on everything. I love it on my eggs, "
+            "my fries, my chicken, my burgers, my hot dogs, my sandwiches, my salads, my pizza.",
+        ]
+        model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small").to(torch_device)
+        tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small")
+        inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
+
+        # Dynamic Cache
+        generated_ids = model.generate(**inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False)
+        dynamic_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        self.assertEqual(EXPECTED_TEXT_COMPLETION, dynamic_text)
+
+        # Static Cache
+        generated_ids = model.generate(
+            **inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False, cache_implementation="static"
+        )
+        static_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        self.assertEqual(EXPECTED_TEXT_COMPLETION, static_text)
+
+        # Static Cache + compile
+        model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
+        generated_ids = model.generate(
+            **inputs, max_new_tokens=NUM_TOKENS_TO_GENERATE, do_sample=False, cache_implementation="static"
+        )
+        static_compiled_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        self.assertEqual(EXPECTED_TEXT_COMPLETION, static_compiled_text)
+
+    @slow
+    @require_torch_gpu
+    def test_compile_static_cache_encoder(self):
+        prompts = [
+            "summarize: Simply put, the theory of relativity states that 1) the speed of light is constant in all inertial "
+            "reference frames, and 2) the laws of physics are the same for all inertial reference frames.\nThe "
+            "theory of relativity is not hard to grasp.",
+            "summarize: My favorite all time favorite condiment is ketchup. I love it on everything. I love it on my eggs, "
+            "my fries, my chicken, my burgers, my hot dogs, my sandwiches, my salads, my pizza.",
+        ]
+        model = T5EncoderModel.from_pretrained("google-t5/t5-small").to(torch_device)
+        tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small")
+        inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
+
+        logits = model(**inputs)
+
+        model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
+        logits_compiled = model(**inputs)
+        self.assertTrue(torch.allclose(logits[0][:, -3:, -3], logits_compiled[0][:, -3:, -3], atol=1e-5))
 
 
 @require_torch

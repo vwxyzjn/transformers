@@ -34,8 +34,8 @@ if is_torch_available():
         LongformerForSequenceClassification,
         LongformerForTokenClassification,
         LongformerModel,
-        LongformerSelfAttention,
     )
+    from transformers.models.longformer.modeling_longformer import LongformerSelfAttention
 
 
 class LongformerModelTester:
@@ -331,10 +331,17 @@ class LongformerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
         if (
-            pipeline_test_casse_name == "QAPipelineTests"
+            pipeline_test_case_name == "QAPipelineTests"
             and tokenizer_name is not None
             and not tokenizer_name.endswith("Fast")
         ):
@@ -384,8 +391,12 @@ class LongformerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_for_multiple_choice(*config_and_inputs)
 
+    @unittest.skip(reason="Longformer cannot keep gradients in attention or hidden states")
     def test_retain_grad_hidden_states_attentions(self):
-        # longformer cannot keep gradients in attentions or hidden states
+        return
+
+    @unittest.skip(reason="LongFormer calculates global attn only when attn_mask has non-zero elements")
+    def test_batching_equivalence(self):
         return
 
 

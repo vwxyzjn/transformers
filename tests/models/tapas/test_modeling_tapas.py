@@ -492,7 +492,14 @@ class TapasModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
         return True
 
@@ -520,8 +527,13 @@ class TapasModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
         self.model_tester.create_and_check_for_sequence_classification(*config_and_inputs)
 
     @require_tensorflow_probability
+    @unittest.skip(reason="tfp is not defined even if installed. FIXME @Arthur in a followup PR!")
     def test_pt_tf_model_equivalence(self):
-        super().test_pt_tf_model_equivalence()
+        pass
+
+    @unittest.skip(reason="tfp is not defined even if installed. FIXME @Arthur in a followup PR!")
+    def test_tf_from_pt_safetensors(self):
+        pass
 
 
 def prepare_tapas_single_inputs_for_inference():

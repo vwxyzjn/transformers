@@ -285,16 +285,17 @@ def main():
         data_files = {}
         if args.train_file is not None:
             data_files["train"] = args.train_file
+            extension = args.train_file.split(".")[-1]
         if args.validation_file is not None:
             data_files["validation"] = args.validation_file
-        extension = args.train_file.split(".")[-1]
+            extension = args.validation_file.split(".")[-1]
         raw_datasets = load_dataset(extension, data_files=data_files)
     # Trim a number of training examples
     if args.debug:
         for split in raw_datasets.keys():
             raw_datasets[split] = raw_datasets[split].select(range(100))
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
+    # https://huggingface.co/docs/datasets/loading_datasets.
 
     if raw_datasets["train"] is not None:
         column_names = raw_datasets["train"].column_names
@@ -541,9 +542,14 @@ def main():
         # Otherwise, `DataCollatorForTokenClassification` will apply dynamic padding for us (by padding to the maximum length of
         # the samples passed). When using mixed precision, we add `pad_to_multiple_of=8` to pad all tensors to multiple
         # of 8s, which will enable the use of Tensor Cores on NVIDIA hardware with compute capability >= 7.5 (Volta).
-        data_collator = DataCollatorForLukeTokenClassification(
-            tokenizer, pad_to_multiple_of=(8 if accelerator.use_fp16 else None)
-        )
+        # For fp8, we pad to multiple of 16.
+        if accelerator.mixed_precision == "fp8":
+            pad_to_multiple_of = 16
+        elif accelerator.mixed_precision != "no":
+            pad_to_multiple_of = 8
+        else:
+            pad_to_multiple_of = None
+        data_collator = DataCollatorForLukeTokenClassification(tokenizer, pad_to_multiple_of=pad_to_multiple_of)
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size

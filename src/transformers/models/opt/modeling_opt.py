@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch OPT model."""
+"""PyTorch OPT model."""
+
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -21,7 +22,11 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
-from ...modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
+from ...generation import GenerationMixin
+from ...modeling_attn_mask_utils import (
+    _prepare_4d_causal_attention_mask,
+    _prepare_4d_causal_attention_mask_for_sdpa,
+)
 from ...modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
@@ -33,10 +38,16 @@ from ...utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    is_flash_attn_2_available,
+    is_flash_attn_greater_or_equal_2_10,
     logging,
     replace_return_docstrings,
 )
 from .configuration_opt import OPTConfig
+
+
+if is_flash_attn_2_available():
+    from ...modeling_flash_attention_utils import _flash_attention_forward
 
 
 logger = logging.get_logger(__name__)
@@ -52,17 +63,6 @@ _CHECKPOINT_FOR_SEQUENCE_CLASSIFICATION = "ArthurZ/opt-350m-dummy-sc"
 _SEQ_CLASS_EXPECTED_LOSS = 1.71
 _SEQ_CLASS_EXPECTED_OUTPUT = "'LABEL_0'"
 
-OPT_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "facebook/opt-125m",
-    "facebook/opt-350m",
-    "facebook/opt-1.3b",
-    "facebook/opt-2.7b",
-    "facebook/opt-6.7b",
-    "facebook/opt-13b",
-    "facebook/opt-30b",
-    # See all OPT models at https://huggingface.co/models?filter=opt
-]
-
 
 class OPTLearnedPositionalEmbedding(nn.Embedding):
     """
@@ -75,17 +75,21 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         self.offset = 2
         super().__init__(num_embeddings + self.offset, embedding_dim)
 
-    def forward(self, attention_mask: torch.LongTensor, past_key_values_length: int = 0):
+    def forward(
+        self,
+        attention_mask: torch.LongTensor,
+        past_key_values_length: int = 0,
+        position_ids: Optional[torch.LongTensor] = None,
+    ):
         """`input_ids_shape` is expected to be [bsz x seqlen]."""
-        attention_mask = attention_mask.long()
 
-        # create positions depending on attention_mask
-        positions = (torch.cumsum(attention_mask, dim=1).type_as(attention_mask) * attention_mask).long() - 1
+        if position_ids is None:
+            position_ids = torch.cumsum(attention_mask, dim=1)
+            position_ids = (position_ids * attention_mask - 1).long()
+            # cut positions if `past_key_values_length` is > 0
+            position_ids = position_ids[:, past_key_values_length:]
 
-        # cut positions if `past_key_values_length` is > 0
-        positions = positions[:, past_key_values_length:]
-
-        return super().forward(positions + self.offset)
+        return super().forward(position_ids + self.offset)
 
 
 class OPTAttention(nn.Module):
@@ -93,32 +97,34 @@ class OPTAttention(nn.Module):
 
     def __init__(
         self,
-        embed_dim: int,
-        num_heads: int,
-        dropout: float = 0.0,
+        config: OPTConfig,
         is_decoder: bool = False,
-        bias: bool = True,
+        **kwargs,
     ):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.dropout = dropout
-        self.head_dim = embed_dim // num_heads
+        self.config = config
+        self.embed_dim = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.dropout = config.attention_dropout
+        self.enable_bias = config.enable_bias
 
-        if (self.head_dim * num_heads) != self.embed_dim:
+        self.head_dim = self.embed_dim // self.num_heads
+        self.is_causal = True
+
+        if (self.head_dim * self.num_heads) != self.embed_dim:
             raise ValueError(
                 f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}"
-                f" and `num_heads`: {num_heads})."
+                f" and `num_heads`: {self.num_heads})."
             )
         self.scaling = self.head_dim**-0.5
         self.is_decoder = is_decoder
 
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
 
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
+    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
     def forward(
@@ -129,6 +135,8 @@ class OPTAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
+        # isn't needed in normal attention, but needed in flash attention so to keep the signature same
+        position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
 
@@ -242,17 +250,239 @@ class OPTAttention(nn.Module):
         return attn_output, attn_weights_reshaped, past_key_value
 
 
+class OptFlashAttention2(OPTAttention):
+    """
+    OPT flash attention module. This module inherits from `OPTAttention` as the weights of the module stays untouched.
+    The only required change would be on the forward pass where it needs to correctly call the public API of flash
+    attention and deal with padding tokens in case the input contains any of them.
+    """
+
+    # Copied from transformers.models.llama.modeling_llama.LlamaFlashAttention2.__init__
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # TODO: Should be removed once Flash Attention for RoCm is bumped to 2.1.
+        # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignement, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
+        # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
+        self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        layer_head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+        position_ids: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """Input shape: Batch x Time x Channel"""
+
+        # if key_value_states are provided this layer is used as a cross-attention layer
+        # for the decoder
+        is_cross_attention = key_value_states is not None
+
+        bsz, _, _ = hidden_states.size()
+
+        # get query proj
+        query_states = self.q_proj(hidden_states)
+        # get key, value proj
+        if is_cross_attention and past_key_value is not None:
+            # reuse k,v, cross_attentions
+            key_states = past_key_value[0]
+            value_states = past_key_value[1]
+        elif is_cross_attention:
+            # cross_attentions
+            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
+            value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
+        elif past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        else:
+            # self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+
+        if self.is_decoder:
+            # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
+            # Further calls to cross_attention layer can then reuse all cross-attention
+            # key/value_states (first "if" case)
+            # if uni-directional self-attention (decoder) save Tuple(torch.Tensor, torch.Tensor) of
+            # all previous decoder key/value_states. Further calls to uni-directional self-attention
+            # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
+            # if encoder bi-directional self-attention `past_key_value` is always `None`
+            past_key_value = (key_states, value_states)
+
+        query_length = query_states.shape[1]
+        tgt_len = key_states.shape[-2]
+
+        # Flash attention requires the input to have the shape
+        # batch_size x seq_length x head_dim x hidden_dim
+        query_states = query_states.view(bsz, query_length, self.num_heads, self.head_dim)
+        key_states = key_states.transpose(1, 2).view(bsz, tgt_len, self.num_heads, self.head_dim)
+        value_states = value_states.transpose(1, 2).view(bsz, tgt_len, self.num_heads, self.head_dim)
+
+        attn_dropout = self.dropout if self.training else 0.0
+
+        # In PEFT, usually we cast the layer norms in float32 for training stability reasons
+        # therefore the input hidden states gets silently casted in float32. Hence, we need
+        # cast them back in float16 just to be sure everything works as expected.
+        input_dtype = query_states.dtype
+        if input_dtype == torch.float32:
+            if torch.is_autocast_enabled():
+                target_dtype = torch.get_autocast_gpu_dtype()
+            # Handle the case where the model is quantized
+            elif hasattr(self.config, "_pre_quantization_dtype"):
+                target_dtype = self.config._pre_quantization_dtype
+            else:
+                target_dtype = self.q_proj.weight.dtype
+
+            logger.warning_once(
+                f"The input hidden states seems to be silently casted in float32, this might be related to"
+                f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
+                f" {target_dtype}."
+            )
+
+            query_states = query_states.to(target_dtype)
+            key_states = key_states.to(target_dtype)
+            value_states = value_states.to(target_dtype)
+
+        attn_output = _flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            query_length,
+            position_ids=position_ids,
+            dropout=attn_dropout,
+            is_causal=self.is_causal,
+            use_top_left_mask=self._flash_attn_uses_top_left_mask,
+        )
+
+        attn_weights_reshaped = attn_output.reshape(bsz, query_length, self.num_heads * self.head_dim)
+        attn_output = self.out_proj(attn_weights_reshaped)
+
+        if not output_attentions:
+            attn_weights_reshaped = None
+
+        return attn_output, attn_weights_reshaped, past_key_value
+
+
+class OPTSdpaAttention(OPTAttention):
+    """
+    OPT sdpa attention module. This module inherits from `OPTAttention` as the weights of the module stays untouched.
+    The only required change would be on the forward pass where it needs to correctly call the public API of sdpa
+    attention and deal with padding tokens in case the input contains any of them.
+    """
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        layer_head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+        position_ids: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        if output_attentions or layer_head_mask is not None:
+            logger.warning_once(
+                "OPTModel is using SDPA attention, which currently does not support output_attentions=True."
+                'failing back to eager attention. remove warning using attn_implementation="eager".'
+            )
+
+            return super().forward(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                layer_head_mask=layer_head_mask,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                key_value_states=key_value_states,
+            )  # TODO after merge add position_ids=position_ids
+        is_cross_attention = key_value_states is not None
+
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states) * self.scaling
+        query_states = self._shape(query_states, -1, bsz)
+
+        # get key, value proj
+        if is_cross_attention and past_key_value is not None:
+            # reuse k,v, cross_attentions
+            key_states = past_key_value[0]
+            value_states = past_key_value[1]
+        elif is_cross_attention:
+            # cross_attentions
+            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
+            value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
+        elif past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        else:
+            # self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+
+        if self.is_decoder:
+            # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
+            # Further calls to cross_attention layer can then reuse all cross-attention
+            # key/value_states (first "if" case)
+            # if uni-directional self-attention (decoder) save Tuple(torch.Tensor, torch.Tensor) of
+            # all previous decoder key/value_states. Further calls to uni-directional self-attention
+            # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
+            # if encoder bi-directional self-attention `past_key_value` is always `None`
+            past_key_value = (key_states, value_states)
+
+        # shape now is (bsz, num_heads, seq_len, head_dim), all are continuous
+
+        causal_mask = attention_mask
+        if attention_mask is not None:
+            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
+
+        # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
+        # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
+        is_causal = True if causal_mask is None and q_len > 1 else False
+
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=causal_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal,
+            # this model uses the scaling factor in the query projection for some reason, but not in Q@K^T
+            # so we need to scale to remove scaling in SDPA to have similar results with eager.
+            # Maybe needs a change in the model to remove scaling in query projection
+            scale=1.0,
+        )
+
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(bsz, q_len, -1)
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output, None, past_key_value
+
+
+OPT_ATTENTION_CLASSES = {
+    "eager": OPTAttention,
+    "flash_attention_2": OptFlashAttention2,
+    "sdpa": OPTSdpaAttention,
+}
+
+
 class OPTDecoderLayer(nn.Module):
     def __init__(self, config: OPTConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
-        self.self_attn = OPTAttention(
-            embed_dim=self.embed_dim,
-            num_heads=config.num_attention_heads,
-            dropout=config.attention_dropout,
-            is_decoder=True,
-            bias=config.enable_bias,
-        )
+
+        self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
+
         self.do_layer_norm_before = config.do_layer_norm_before
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
@@ -272,6 +502,7 @@ class OPTDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -299,6 +530,7 @@ class OPTDecoderLayer(nn.Module):
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             past_key_value=past_key_value,
+            position_ids=position_ids,
             attention_mask=attention_mask,
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
@@ -368,6 +600,8 @@ class OPTPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["OPTDecoderLayer"]
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
 
     def _init_weights(self, module):
         std = self.config.init_std
@@ -440,6 +674,11 @@ OPT_INPUTS_DOCSTRING = r"""
             more detail.
         return_dict (`bool`, *optional*):
             Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+            config.n_positions - 1]`. for padding use -1.
+
+            [What are position IDs?](../glossary#position-ids)
 """
 
 
@@ -483,6 +722,8 @@ class OPTDecoder(OPTPreTrainedModel):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList([OPTDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
+        self._use_sdpa = config._attn_implementation == "sdpa"
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -493,6 +734,49 @@ class OPTDecoder(OPTPreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
+
+    def _update_causal_mask(
+        self,
+        inputs_embeds: torch.Tensor,
+        input_shape: Tuple[int, int],
+        past_key_values_length: int,
+        attention_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+    ):
+        """
+        Updates the causal mask for the decoder.
+        """
+        batch_size, seq_length = input_shape
+        mask_seq_length = past_key_values_length + seq_length
+        if self._use_flash_attention_2:
+            # 2d mask is passed through the layers
+            causal_attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+            attention_mask = (
+                torch.ones(batch_size, mask_seq_length, device=inputs_embeds.device)
+                if attention_mask is None
+                else attention_mask
+            )
+
+            return causal_attention_mask, attention_mask
+
+        if attention_mask is None:
+            attention_mask = torch.ones(batch_size, mask_seq_length, device=inputs_embeds.device)
+        elif attention_mask.shape[1] != mask_seq_length:
+            raise ValueError(
+                f"The provided attention mask has length {attention_mask.shape[1]}, but its length should be "
+                f"{mask_seq_length} (sum of the lengths of current and past inputs)"
+            )
+        if self._use_sdpa and not output_attentions and head_mask is None:
+            causal_attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask, input_shape, inputs_embeds, past_key_values_length
+            )
+        else:
+            causal_attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask, input_shape, inputs_embeds, past_key_values_length
+            )
+
+        return causal_attention_mask, attention_mask
 
     def forward(
         self,
@@ -505,6 +789,7 @@ class OPTDecoder(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         r"""
         Args:
@@ -552,6 +837,11 @@ class OPTDecoder(OPTPreTrainedModel):
                 for more detail.
             return_dict (`bool`, *optional*):
                 Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+            position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+                config.n_positions - 1]`. for padding use -1.
+
+                [What are position IDs?](../glossary#position-ids)
         """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -575,23 +865,20 @@ class OPTDecoder(OPTPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        batch_size, seq_length = input_shape
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-        # required mask seq length can be calculated via length of past
-        mask_seq_length = past_key_values_length + seq_length
 
-        # embed positions
-        if attention_mask is None:
-            attention_mask = torch.ones(batch_size, mask_seq_length, device=inputs_embeds.device)
-        elif attention_mask.shape[1] != mask_seq_length:
-            raise ValueError(
-                f"The provided attention mask has length {attention_mask.shape[1]}, but its length should be "
-                f"{mask_seq_length} (sum of the lengths of current and past inputs)"
-            )
-        causal_attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask, input_shape, inputs_embeds, past_key_values_length
+        causal_attention_mask, attention_mask = self._update_causal_mask(
+            inputs_embeds, input_shape, past_key_values_length, attention_mask, head_mask, output_attentions
         )
-        pos_embeds = self.embed_positions(attention_mask, past_key_values_length)
+        # embed positions
+
+        if position_ids is None:
+            position_ids = torch.cumsum(attention_mask, dim=1)
+            position_ids = (position_ids * attention_mask - 1).long()
+            # cut positions if `past_key_values_length` is > 0
+            position_ids = position_ids[:, past_key_values_length:]
+
+        pos_embeds = self.embed_positions(attention_mask, past_key_values_length, position_ids=position_ids)
 
         if self.project_in is not None:
             inputs_embeds = self.project_in(inputs_embeds)
@@ -640,11 +927,13 @@ class OPTDecoder(OPTPreTrainedModel):
                     None,
                     output_attentions,
                     use_cache,
+                    position_ids,
                 )
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=causal_attention_mask,
+                    position_ids=position_ids,
                     layer_head_mask=(head_mask[idx] if head_mask is not None else None),
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
@@ -718,6 +1007,7 @@ class OPTModel(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -730,6 +1020,7 @@ class OPTModel(OPTPreTrainedModel):
         decoder_outputs = self.decoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             head_mask=head_mask,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -750,7 +1041,7 @@ class OPTModel(OPTPreTrainedModel):
         )
 
 
-class OPTForCausalLM(OPTPreTrainedModel):
+class OPTForCausalLM(OPTPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
@@ -794,6 +1085,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -849,6 +1141,11 @@ class OPTForCausalLM(OPTPreTrainedModel):
                 for more detail.
             return_dict (`bool`, *optional*):
                 Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+            position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+                config.n_positions - 1]`. for padding use -1.
+
+                [What are position IDs?](../glossary#position-ids)
 
         Returns:
 
@@ -879,6 +1176,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
         outputs = self.model.decoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             head_mask=head_mask,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -912,36 +1210,6 @@ class OPTForCausalLM(OPTPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values is not None:
-            past_length = past_key_values[0][0].shape[2]
-
-            # Some generation methods already pass only the last input ID
-            if input_ids.shape[1] > past_length:
-                remove_prefix_length = past_length
-            else:
-                # Default to old behavior: keep only final ID
-                remove_prefix_length = input_ids.shape[1] - 1
-
-            input_ids = input_ids[:, remove_prefix_length:]
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-            }
-        )
-        return model_inputs
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
@@ -998,6 +1266,7 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1011,6 +1280,7 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
             input_ids,
             past_key_values=past_key_values,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
@@ -1030,12 +1300,13 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
             sequence_lengths = -1
         else:
             if input_ids is not None:
-                sequence_lengths = (torch.eq(input_ids, self.config.pad_token_id).long().argmax(-1) - 1).to(
-                    logits.device
-                )
+                # if no pad token found, use modulo instead of reverse indexing for ONNX compatibility
+                sequence_lengths = torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+                sequence_lengths = sequence_lengths % input_ids.shape[-1]
+                sequence_lengths = sequence_lengths.to(logits.device)
             else:
                 sequence_lengths = -1
-                logger.warning(
+                logger.warning_once(
                     f"{self.__class__.__name__} will not detect padding tokens in `inputs_embeds`. Results may be "
                     "unexpected if using padding tokens in conjunction with `inputs_embeds.`"
                 )
@@ -1114,6 +1385,7 @@ class OPTForQuestionAnswering(OPTPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        position_ids: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, QuestionAnsweringModelOutput]:
         r"""
         start_positions (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1164,6 +1436,7 @@ class OPTForQuestionAnswering(OPTPreTrainedModel):
             input_ids,
             past_key_values=past_key_values,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
@@ -1187,8 +1460,8 @@ class OPTForQuestionAnswering(OPTPreTrainedModel):
                 end_positions = end_positions.squeeze(-1)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
             ignored_index = start_logits.size(1)
-            start_positions = start_positions.clamp(0, ignored_index)
-            end_positions = end_positions.clamp(0, ignored_index)
+            start_positions = start_positions.clamp(0, ignored_index).to(logits.device)
+            end_positions = end_positions.clamp(0, ignored_index).to(logits.device)
 
             loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
             start_loss = loss_fct(start_logits, start_positions)

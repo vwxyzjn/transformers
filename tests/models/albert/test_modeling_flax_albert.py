@@ -80,6 +80,7 @@ class FlaxAlbertModelTester(unittest.TestCase):
         self.type_sequence_label_size = type_sequence_label_size
         self.initializer_range = initializer_range
         self.num_choices = num_choices
+        super().__init__()
 
     def prepare_config_and_inputs(self):
         input_ids = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
@@ -139,7 +140,7 @@ class FlaxAlbertModelTest(FlaxModelTesterMixin, unittest.TestCase):
     @slow
     def test_model_from_pretrained(self):
         for model_class_name in self.all_model_classes:
-            model = model_class_name.from_pretrained("albert-base-v2")
+            model = model_class_name.from_pretrained("albert/albert-base-v2")
             outputs = model(np.ones((1, 1)))
             self.assertIsNotNone(outputs)
 
@@ -148,7 +149,7 @@ class FlaxAlbertModelTest(FlaxModelTesterMixin, unittest.TestCase):
 class FlaxAlbertModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_no_head_absolute_embedding(self):
-        model = FlaxAlbertModel.from_pretrained("albert-base-v2")
+        model = FlaxAlbertModel.from_pretrained("albert/albert-base-v2")
         input_ids = np.array([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = np.array([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
         output = model(input_ids, attention_mask=attention_mask)[0]

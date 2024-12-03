@@ -38,7 +38,7 @@ The `.optimization` module provides:
 
 ## Schedules
 
-### Learning Rate Schedules (Pytorch)
+### Learning Rate Schedules (PyTorch)
 
 [[autodoc]] SchedulerType
 
@@ -65,6 +65,8 @@ The `.optimization` module provides:
 [[autodoc]] get_polynomial_decay_schedule_with_warmup
 
 [[autodoc]] get_inverse_sqrt_schedule
+
+[[autodoc]] get_wsd_schedule
 
 ### Warmup (TensorFlow)
 

@@ -23,7 +23,7 @@ Get up and running with 🤗 Transformers! Whether you're a developer or an ever
 Before you begin, make sure you have all the necessary libraries installed:
 
 ```bash
-!pip install transformers datasets
+!pip install transformers datasets evaluate accelerate
 ```
 
 You'll also need to install your preferred machine learning framework:
@@ -77,7 +77,7 @@ Start by creating an instance of [`pipeline`] and specifying a task you want to 
 >>> classifier = pipeline("sentiment-analysis")
 ```
 
-The [`pipeline`] downloads and caches a default [pretrained model](https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english) and tokenizer for sentiment analysis. Now you can use the `classifier` on your target text:
+The [`pipeline`] downloads and caches a default [pretrained model](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english) and tokenizer for sentiment analysis. Now you can use the `classifier` on your target text:
 
 ```py
 >>> classifier("We are very happy to show you the 🤗 Transformers library.")
@@ -111,7 +111,7 @@ Load an audio dataset (see the 🤗 Datasets [Quick Start](https://huggingface.c
 >>> dataset = load_dataset("PolyAI/minds14", name="en-US", split="train")  # doctest: +IGNORE_RESULT
 ```
 
-You need to make sure the sampling rate of the dataset matches the sampling 
+You need to make sure the sampling rate of the dataset matches the sampling
 rate [`facebook/wav2vec2-base-960h`](https://huggingface.co/facebook/wav2vec2-base-960h) was trained on:
 
 ```py
@@ -174,7 +174,7 @@ If you can't find a model for your use-case, you'll need to finetune a pretraine
 
 <Youtube id="AhChOFRegn4"/>
 
-Under the hood, the [`AutoModelForSequenceClassification`] and [`AutoTokenizer`] classes work together to power the [`pipeline`] you used above. An [AutoClass](./model_doc/auto) is a shortcut that automatically retrieves the architecture of a pretrained model from its name or path. You only need to select the appropriate `AutoClass` for your task and it's associated preprocessing class. 
+Under the hood, the [`AutoModelForSequenceClassification`] and [`AutoTokenizer`] classes work together to power the [`pipeline`] you used above. An [AutoClass](./model_doc/auto) is a shortcut that automatically retrieves the architecture of a pretrained model from its name or path. You only need to select the appropriate `AutoClass` for your task and it's associated preprocessing class.
 
 Let's return to the example from the previous section and see how you can use the `AutoClass` to replicate the results of the [`pipeline`].
 
@@ -204,7 +204,7 @@ Pass your text to the tokenizer:
 The tokenizer returns a dictionary containing:
 
 * [input_ids](./glossary#input-ids): numerical representations of your tokens.
-* [attention_mask](.glossary#attention-mask): indicates which tokens should be attended to.
+* [attention_mask](./glossary#attention-mask): indicates which tokens should be attended to.
 
 A tokenizer can also accept a list of inputs, and pad and truncate the text to return a batch with uniform length:
 
@@ -360,8 +360,8 @@ One particularly cool 🤗 Transformers feature is the ability to save a model a
 ```py
 >>> from transformers import AutoModel
 
->>> tokenizer = AutoTokenizer.from_pretrained(tf_save_directory)
->>> pt_model = AutoModelForSequenceClassification.from_pretrained(tf_save_directory, from_tf=True)
+>>> tokenizer = AutoTokenizer.from_pretrained(pt_save_directory)
+>>> pt_model = AutoModelForSequenceClassification.from_pretrained(pt_save_directory, from_pt=True)
 ```
 </pt>
 <tf>
@@ -369,8 +369,8 @@ One particularly cool 🤗 Transformers feature is the ability to save a model a
 ```py
 >>> from transformers import TFAutoModel
 
->>> tokenizer = AutoTokenizer.from_pretrained(pt_save_directory)
->>> tf_model = TFAutoModelForSequenceClassification.from_pretrained(pt_save_directory, from_pt=True)
+>>> tokenizer = AutoTokenizer.from_pretrained(tf_save_directory)
+>>> tf_model = TFAutoModelForSequenceClassification.from_pretrained(tf_save_directory, from_tf=True)
 ```
 </tf>
 </frameworkcontent>
@@ -384,7 +384,7 @@ Start by importing [`AutoConfig`], and then load the pretrained model you want t
 ```py
 >>> from transformers import AutoConfig
 
->>> my_config = AutoConfig.from_pretrained("distilbert-base-uncased", n_heads=12)
+>>> my_config = AutoConfig.from_pretrained("distilbert/distilbert-base-uncased", n_heads=12)
 ```
 
 <frameworkcontent>
@@ -421,7 +421,7 @@ Depending on your task, you'll typically pass the following parameters to [`Trai
    ```py
    >>> from transformers import AutoModelForSequenceClassification
 
-   >>> model = AutoModelForSequenceClassification.from_pretrained("distilbert-base-uncased")
+   >>> model = AutoModelForSequenceClassification.from_pretrained("distilbert/distilbert-base-uncased")
    ```
 
 2. [`TrainingArguments`] contains the model hyperparameters you can change like learning rate, batch size, and the number of epochs to train for. The default values are used if you don't specify any training arguments:
@@ -443,7 +443,7 @@ Depending on your task, you'll typically pass the following parameters to [`Trai
    ```py
    >>> from transformers import AutoTokenizer
 
-   >>> tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+   >>> tokenizer = AutoTokenizer.from_pretrained("distilbert/distilbert-base-uncased")
    ```
 
 4. Load a dataset:
@@ -485,7 +485,7 @@ Now gather all these classes in [`Trainer`]:
 ...     args=training_args,
 ...     train_dataset=dataset["train"],
 ...     eval_dataset=dataset["test"],
-...     tokenizer=tokenizer,
+...     processing_class=tokenizer,
 ...     data_collator=data_collator,
 ... )  # doctest: +SKIP
 ```
@@ -502,9 +502,9 @@ For tasks - like translation or summarization - that use a sequence-to-sequence 
 
 </Tip>
 
-You can customize the training loop behavior by subclassing the methods inside [`Trainer`]. This allows you to customize features such as the loss function, optimizer, and scheduler. Take a look at the [`Trainer`] reference for which methods can be subclassed. 
+You can customize the training loop behavior by subclassing the methods inside [`Trainer`]. This allows you to customize features such as the loss function, optimizer, and scheduler. Take a look at the [`Trainer`] reference for which methods can be subclassed.
 
-The other way to customize the training loop is by using [Callbacks](./main_classes/callbacks). You can use callbacks to integrate with other libraries and inspect the training loop to report on progress or stop the training early. Callbacks do not modify anything in the training loop itself. To customize something like the loss function, you need to subclass the [`Trainer`] instead.
+The other way to customize the training loop is by using [Callbacks](./main_classes/callback). You can use callbacks to integrate with other libraries and inspect the training loop to report on progress or stop the training early. Callbacks do not modify anything in the training loop itself. To customize something like the loss function, you need to subclass the [`Trainer`] instead.
 
 ## Train with TensorFlow
 
@@ -515,7 +515,7 @@ All models are a standard [`tf.keras.Model`](https://www.tensorflow.org/api_docs
    ```py
    >>> from transformers import TFAutoModelForSequenceClassification
 
-   >>> model = TFAutoModelForSequenceClassification.from_pretrained("distilbert-base-uncased")
+   >>> model = TFAutoModelForSequenceClassification.from_pretrained("distilbert/distilbert-base-uncased")
    ```
 
 2. Load a preprocessing class like a tokenizer, image processor, feature extractor, or processor:
@@ -523,7 +523,7 @@ All models are a standard [`tf.keras.Model`](https://www.tensorflow.org/api_docs
    ```py
    >>> from transformers import AutoTokenizer
 
-   >>> tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+   >>> tokenizer = AutoTokenizer.from_pretrained("distilbert/distilbert-base-uncased")
    ```
 
 3. Create a function to tokenize the dataset:
@@ -547,7 +547,7 @@ All models are a standard [`tf.keras.Model`](https://www.tensorflow.org/api_docs
    ```py
    >>> from tensorflow.keras.optimizers import Adam
 
-   >>> model.compile(optimizer=Adam(3e-5))  # No loss argument!
+   >>> model.compile(optimizer='adam')  # No loss argument!
    >>> model.fit(tf_dataset)  # doctest: +SKIP
    ```
 

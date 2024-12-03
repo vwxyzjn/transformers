@@ -164,7 +164,7 @@ If not specified in the [`~generation.GenerationConfig`] file, `generate` return
 By default, and unless specified in the [`~generation.GenerationConfig`] file, `generate` selects the most likely token at each iteration (greedy decoding). Depending on your task, this may be undesirable; creative tasks like chatbots or writing an essay benefit from sampling. On the other hand, input-grounded tasks like audio transcription or translation benefit from greedy decoding. Enable sampling with `do_sample=True`, and you can learn more about this topic in this [blog post](https://huggingface.co/blog/how-to-generate).
 
 ```py
->>> # Set seed or reproducibility -- you don't need this unless you want full reproducibility
+>>> # Set seed for reproducibility -- you don't need this unless you want full reproducibility
 >>> from transformers import set_seed
 >>> set_seed(42)
 
@@ -247,10 +247,11 @@ While the autoregressive generation process is relatively straightforward, makin
 
 ### Advanced generate usage
 
-1. [Guide](generation_strategies) on how to control different generation methods, how to set up the generation configuration file, and how to stream the output;
-2. [Guide](chat_templating) on the prompt template for chat LLMs;
-3. [Guide](tasks/prompting) on to get the most of prompt design;
-4. API reference on [`~generation.GenerationConfig`], [`~generation.GenerationMixin.generate`], and [generate-related classes](internal/generation_utils).
+1. Guide on how to [control different generation methods](generation_strategies), how to set up the generation configuration file, and how to stream the output;
+2. [Accelerating text generation](llm_optims);
+3. [Prompt templates for chat LLMs](chat_templating);
+4. [Prompt design guide](tasks/prompting);
+5. API reference on [`~generation.GenerationConfig`], [`~generation.GenerationMixin.generate`], and [generate-related classes](internal/generation_utils). Most of the classes, including the logits processors, have usage examples!
 
 ### LLM leaderboards
 
@@ -259,10 +260,13 @@ While the autoregressive generation process is relatively straightforward, makin
 
 ### Latency, throughput and memory utilization
 
-1. [Guide](llm_tutorial_optimization) on how to optimize LLMs for speed and memory;
-2. [Guide](main_classes/quantization) on quantization such as bitsandbytes and autogptq, which shows you how to drastically reduce your memory requirements.
+1. Guide on how to [optimize LLMs for speed and memory](llm_tutorial_optimization);
+2. Guide on [quantization](main_classes/quantization) such as bitsandbytes and autogptq, which shows you how to drastically reduce your memory requirements.
 
 ### Related libraries
 
-1. [`text-generation-inference`](https://github.com/huggingface/text-generation-inference), a production-ready server for LLMs;
-2. [`optimum`](https://github.com/huggingface/optimum), an extension of 🤗 Transformers that optimizes for specific hardware devices.
+1. [`optimum`](https://github.com/huggingface/optimum), an extension of 🤗 Transformers that optimizes for specific hardware devices.
+2. [`outlines`](https://github.com/outlines-dev/outlines), a library where you can constrain text generation (e.g. to generate JSON files);
+3. [`SynCode`](https://github.com/uiuc-focal-lab/syncode), a library for context-free grammar guided generation. (e.g. JSON, SQL, Python)
+4. [`text-generation-inference`](https://github.com/huggingface/text-generation-inference), a production-ready server for LLMs;
+5. [`text-generation-webui`](https://github.com/oobabooga/text-generation-webui), a UI for text generation;

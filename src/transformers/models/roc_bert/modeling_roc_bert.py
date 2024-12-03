@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch RoCBert model."""
+"""PyTorch RoCBert model."""
 
 import math
 import os
@@ -24,6 +24,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
+from ...generation import GenerationMixin
 from ...modeling_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
     BaseModelOutputWithPoolingAndCrossAttentions,
@@ -56,9 +57,7 @@ _EXPECTED_OUTPUT_SHAPE = [1, 8, 768]
 
 # Token Classification output
 _CHECKPOINT_FOR_TOKEN_CLASSIFICATION = "ArthurZ/dummy-rocbert-ner"
-# fmt: off
-_TOKEN_CLASS_EXPECTED_OUTPUT = ["S-EVENT", "S-FAC", "I-ORDINAL", "I-ORDINAL", "E-ORG", "E-LANGUAGE", "E-ORG", "E-ORG", "E-ORG", "E-ORG", "I-EVENT", "S-TIME", "S-TIME", "E-LANGUAGE", "S-TIME", "E-DATE", "I-ORDINAL", "E-QUANTITY", "E-LANGUAGE", "S-TIME", "B-ORDINAL", "S-PRODUCT", "E-LANGUAGE", "E-LANGUAGE", "E-ORG", "E-LOC", "S-TIME", "I-ORDINAL", "S-FAC", "O", "S-GPE", "I-EVENT", "S-GPE", "E-LANGUAGE", "E-ORG", "S-EVENT", "S-FAC", "S-FAC", "S-FAC", "E-ORG", "S-FAC", "E-ORG", "S-GPE"]
-# fmt: on
+_TOKEN_CLASS_EXPECTED_OUTPUT = ["S-EVENT", "S-FAC", "I-ORDINAL", "I-ORDINAL", "E-ORG", "E-LANGUAGE", "E-ORG", "E-ORG", "E-ORG", "E-ORG", "I-EVENT", "S-TIME", "S-TIME", "E-LANGUAGE", "S-TIME", "E-DATE", "I-ORDINAL", "E-QUANTITY", "E-LANGUAGE", "S-TIME", "B-ORDINAL", "S-PRODUCT", "E-LANGUAGE", "E-LANGUAGE", "E-ORG", "E-LOC", "S-TIME", "I-ORDINAL", "S-FAC", "O", "S-GPE", "I-EVENT", "S-GPE", "E-LANGUAGE", "E-ORG", "S-EVENT", "S-FAC", "S-FAC", "S-FAC", "E-ORG", "S-FAC", "E-ORG", "S-GPE"]  # fmt: skip
 _TOKEN_CLASS_EXPECTED_LOSS = 3.62
 
 # SequenceClassification docstring
@@ -74,10 +73,6 @@ _QA_TARGET_START_INDEX = 14
 _QA_TARGET_END_INDEX = 15
 
 # Maske language modeling
-ROC_BERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "weiweishi/roc-bert-base-zh",
-    # See all RoCBert models at https://huggingface.co/models?filter=roc_bert
-]
 
 
 # Copied from transformers.models.bert.modeling_bert.load_tf_weights_in_bert with bert->roc_bert
@@ -435,11 +430,18 @@ class RoCBertSelfOutput(nn.Module):
         return hidden_states
 
 
-# Copied from transformers.models.bert.modeling_bert.BertAttention with Bert->RoCBert
+ROC_BERT_SELF_ATTENTION_CLASSES = {
+    "eager": RoCBertSelfAttention,
+}
+
+
+# Copied from transformers.models.bert.modeling_bert.BertAttention with Bert->RoCBert,BERT->ROC_BERT
 class RoCBertAttention(nn.Module):
     def __init__(self, config, position_embedding_type=None):
         super().__init__()
-        self.self = RoCBertSelfAttention(config, position_embedding_type=position_embedding_type)
+        self.self = ROC_BERT_SELF_ATTENTION_CLASSES[config._attn_implementation](
+            config, position_embedding_type=position_embedding_type
+        )
         self.output = RoCBertSelfOutput(config)
         self.pruned_heads = set()
 
@@ -746,6 +748,9 @@ class RoCBertLMPredictionHead(nn.Module):
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
 
+    def _tie_weights(self):
+        self.decoder.bias = self.bias
+
     def forward(self, hidden_states):
         hidden_states = self.transform(hidden_states)
         hidden_states = self.decoder(hidden_states)
@@ -763,7 +768,6 @@ class RoCBertOnlyMLMHead(nn.Module):
         return prediction_scores
 
 
-# Copied from transformers.models.bert.modeling_bert.BertPreTrainedModel with Bert->RoCBert,bert->roc_bert
 class RoCBertPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
@@ -884,7 +888,7 @@ class RoCBertModel(RoCBertPreTrainedModel):
     `add_cross_attention` set to `True`; an `encoder_hidden_states` is then expected as an input to the forward pass.
     """
 
-    # Copied from transformers.models.bert.modeling_bert.BertModel.__init__ with Bert->RoCBert
+    # Copied from transformers.models.clap.modeling_clap.ClapTextModel.__init__ with ClapText->RoCBert
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
@@ -1092,6 +1096,7 @@ class RoCBertForPreTraining(RoCBertPreTrainedModel):
     # Copied from transformers.models.bert.modeling_bert.BertForPreTraining.set_output_embeddings
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
+        self.cls.predictions.bias = new_embeddings.bias
 
     @add_start_docstrings_to_model_forward(ROC_BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=MaskedLMOutput, config_class=_CONFIG_FOR_DOC)
@@ -1147,7 +1152,7 @@ class RoCBertForPreTraining(RoCBertPreTrainedModel):
                  ignored (masked), the loss is only computed for the tokens with labels in `[0, ...,
                  config.vocab_size]`
 
-            kwargs (`Dict[str, any]`, optional, defaults to *{}*):
+            kwargs (`Dict[str, any]`, *optional*, defaults to *{}*):
                 Used to hide legacy arguments that have been deprecated.
 
         Returns:
@@ -1284,6 +1289,7 @@ class RoCBertForMaskedLM(RoCBertPreTrainedModel):
     # Copied from transformers.models.bert.modeling_bert.BertForMaskedLM.set_output_embeddings
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
+        self.cls.predictions.bias = new_embeddings.bias
 
     @add_start_docstrings_to_model_forward(ROC_BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     def forward(
@@ -1398,7 +1404,7 @@ class RoCBertForMaskedLM(RoCBertPreTrainedModel):
 @add_start_docstrings(
     """RoCBert Model with a `language modeling` head on top for CLM fine-tuning.""", ROC_BERT_START_DOCSTRING
 )
-class RoCBertForCausalLM(RoCBertPreTrainedModel):
+class RoCBertForCausalLM(RoCBertPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["cls.predictions.decoder.weight", "cls.predictions.decoder.bias"]
 
     # Copied from transformers.models.bert.modeling_bert.BertLMHeadModel.__init__ with BertLMHeadModel->RoCBertForCausalLM,Bert->RoCBert,bert->roc_bert
@@ -1421,6 +1427,7 @@ class RoCBertForCausalLM(RoCBertPreTrainedModel):
     # Copied from transformers.models.bert.modeling_bert.BertLMHeadModel.set_output_embeddings
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
+        self.cls.predictions.bias = new_embeddings.bias
 
     @add_start_docstrings_to_model_forward(ROC_BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=CausalLMOutputWithCrossAttentions, config_class=_CONFIG_FOR_DOC)
@@ -1545,6 +1552,8 @@ class RoCBertForCausalLM(RoCBertPreTrainedModel):
         attention_mask=None,
         **model_kwargs,
     ):
+        # Overwritten -- `input_pronunciation_ids`
+
         input_shape = input_ids.shape
 
         # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly

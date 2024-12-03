@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import warnings
+from math import ceil
 from typing import Iterable, List, Optional, Tuple, Union
 
 import numpy as np
@@ -30,6 +31,8 @@ from .utils.import_utils import (
     is_flax_available,
     is_tf_available,
     is_torch_available,
+    is_torchvision_available,
+    is_torchvision_v2_available,
     is_vision_available,
     requires_backends,
 )
@@ -48,6 +51,11 @@ if is_tf_available():
 
 if is_flax_available():
     import jax.numpy as jnp
+
+if is_torchvision_v2_available():
+    from torchvision.transforms.v2 import functional as F
+elif is_torchvision_available():
+    from torchvision.transforms import functional as F
 
 
 def to_channel_dimension_format(
@@ -70,7 +78,7 @@ def to_channel_dimension_format(
         `np.ndarray`: The image with the channel dimension set to `channel_dim`.
     """
     if not isinstance(image, np.ndarray):
-        raise ValueError(f"Input image must be of type np.ndarray, got {type(image)}")
+        raise TypeError(f"Input image must be of type np.ndarray, got {type(image)}")
 
     if input_channel_dim is None:
         input_channel_dim = infer_channel_dimension_format(image)
@@ -116,13 +124,13 @@ def rescale(
         `np.ndarray`: The rescaled image.
     """
     if not isinstance(image, np.ndarray):
-        raise ValueError(f"Input image must be of type np.ndarray, got {type(image)}")
+        raise TypeError(f"Input image must be of type np.ndarray, got {type(image)}")
 
-    rescaled_image = image * scale
+    rescaled_image = image.astype(np.float64) * scale  # Numpy type promotion has changed, so always upcast first
     if data_format is not None:
         rescaled_image = to_channel_dimension_format(rescaled_image, data_format, input_data_format)
 
-    rescaled_image = rescaled_image.astype(dtype)
+    rescaled_image = rescaled_image.astype(dtype)  # Finally downcast to the desired dtype at the end
 
     return rescaled_image
 
@@ -157,6 +165,7 @@ def _rescale_for_pil_conversion(image):
 def to_pil_image(
     image: Union[np.ndarray, "PIL.Image.Image", "torch.Tensor", "tf.Tensor", "jnp.ndarray"],
     do_rescale: Optional[bool] = None,
+    image_mode: Optional[str] = None,
     input_data_format: Optional[Union[str, ChannelDimension]] = None,
 ) -> "PIL.Image.Image":
     """
@@ -170,6 +179,8 @@ def to_pil_image(
             Whether or not to apply the scaling factor (to make pixel values integers between 0 and 255). Will default
             to `True` if the image type is a floating type and casting to `int` would result in a loss of precision,
             and `False` otherwise.
+        image_mode (`str`, *optional*):
+            The mode to use for the PIL image. If unset, will use the default mode for the input image type.
         input_data_format (`ChannelDimension`, *optional*):
             The channel dimension format of the input image. If unset, will use the inferred format from the input.
 
@@ -202,7 +213,7 @@ def to_pil_image(
         image = rescale(image, 255)
 
     image = image.astype(np.uint8)
-    return PIL.Image.fromarray(image)
+    return PIL.Image.fromarray(image, mode=image_mode)
 
 
 # Logic adapted from torchvision resizing logic: https://github.com/pytorch/vision/blob/511924c1ced4ce0461197e5caa64ce5b9e558aab/torchvision/transforms/functional.py#L366
@@ -220,7 +231,7 @@ def get_resize_output_image_size(
     Args:
         input_image (`np.ndarray`):
             The image to resize.
-        size (`int` or `Tuple[int, int]` or List[int] or Tuple[int]):
+        size (`int` or `Tuple[int, int]` or List[int] or `Tuple[int]`):
             The size to use for resizing the image. If `size` is a sequence like (h, w), output size will be matched to
             this.
 
@@ -373,8 +384,14 @@ def normalize(
 
     if input_data_format is None:
         input_data_format = infer_channel_dimension_format(image)
+
     channel_axis = get_channel_dimension_axis(image, input_data_format=input_data_format)
     num_channels = image.shape[channel_axis]
+
+    # We cast to float32 to avoid errors that can occur when subtracting uint8 values.
+    # We preserve the original dtype if it is a float type to prevent upcasting float16.
+    if not np.issubdtype(image.dtype, np.floating):
+        image = image.astype(np.float32)
 
     if isinstance(mean, Iterable):
         if len(mean) != num_channels:
@@ -442,7 +459,7 @@ def center_crop(
     return_numpy = True if return_numpy is None else return_numpy
 
     if not isinstance(image, np.ndarray):
-        raise ValueError(f"Input image must be of type np.ndarray, got {type(image)}")
+        raise TypeError(f"Input image must be of type np.ndarray, got {type(image)}")
 
     if not isinstance(size, Iterable) or len(size) != 2:
         raise ValueError("size must have 2 elements representing the height and width of the output image")
@@ -478,9 +495,9 @@ def center_crop(
     new_image = np.zeros_like(image, shape=new_shape)
 
     # If the image is too small, pad it with zeros
-    top_pad = (new_height - orig_height) // 2
+    top_pad = ceil((new_height - orig_height) / 2)
     bottom_pad = top_pad + orig_height
-    left_pad = (new_width - orig_width) // 2
+    left_pad = ceil((new_width - orig_width) / 2)
     right_pad = left_pad + orig_width
     new_image[..., top_pad:bottom_pad, left_pad:right_pad] = image
 
@@ -744,7 +761,6 @@ def convert_to_rgb(image: ImageInput) -> ImageInput:
     """
     Converts an image to RGB format. Only converts if the image is of type PIL.Image.Image, otherwise returns the image
     as is.
-
     Args:
         image (Image):
             The image to convert.
@@ -752,6 +768,9 @@ def convert_to_rgb(image: ImageInput) -> ImageInput:
     requires_backends(convert_to_rgb, ["vision"])
 
     if not isinstance(image, PIL.Image.Image):
+        return image
+
+    if image.mode == "RGB":
         return image
 
     image = image.convert("RGB")
@@ -794,3 +813,48 @@ def flip_channel_order(
     if data_format is not None:
         image = to_channel_dimension_format(image, data_format, input_channel_dim=input_data_format)
     return image
+
+
+def _cast_tensor_to_float(x):
+    if x.is_floating_point():
+        return x
+    return x.float()
+
+
+class FusedRescaleNormalize:
+    """
+    Rescale and normalize the input image in one step.
+    """
+
+    def __init__(self, mean, std, rescale_factor: float = 1.0, inplace: bool = False):
+        self.mean = torch.tensor(mean) * (1.0 / rescale_factor)
+        self.std = torch.tensor(std) * (1.0 / rescale_factor)
+        self.inplace = inplace
+
+    def __call__(self, image: "torch.Tensor"):
+        image = _cast_tensor_to_float(image)
+        return F.normalize(image, self.mean, self.std, inplace=self.inplace)
+
+
+class Rescale:
+    """
+    Rescale the input image by rescale factor: image *= rescale_factor.
+    """
+
+    def __init__(self, rescale_factor: float = 1.0):
+        self.rescale_factor = rescale_factor
+
+    def __call__(self, image: "torch.Tensor"):
+        image = image * self.rescale_factor
+        return image
+
+
+class NumpyToTensor:
+    """
+    Convert a numpy array to a PyTorch tensor.
+    """
+
+    def __call__(self, image: np.ndarray):
+        # Same as in PyTorch, we assume incoming numpy images are in HWC format
+        # c.f. https://github.com/pytorch/vision/blob/61d97f41bc209e1407dcfbd685d2ee2da9c1cdad/torchvision/transforms/functional.py#L154
+        return torch.from_numpy(image.transpose(2, 0, 1)).contiguous()

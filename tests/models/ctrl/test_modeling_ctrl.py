@@ -13,11 +13,10 @@
 # limitations under the License.
 
 
-import gc
 import unittest
 
 from transformers import CTRLConfig, is_torch_available
-from transformers.testing_utils import backend_empty_cache, require_torch, slow, torch_device
+from transformers.testing_utils import cleanup, require_torch, slow, torch_device
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
@@ -29,7 +28,6 @@ if is_torch_available():
     import torch
 
     from transformers import (
-        CTRL_PRETRAINED_MODEL_ARCHIVE_LIST,
         CTRLForSequenceClassification,
         CTRLLMHeadModel,
         CTRLModel,
@@ -212,9 +210,16 @@ class CTRLModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
 
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        if pipeline_test_casse_name == "ZeroShotClassificationPipelineTests":
+        if pipeline_test_case_name == "ZeroShotClassificationPipelineTests":
             # Get `tokenizer does not have a padding token` error for both fast/slow tokenizers.
             # `CTRLConfig` was never used in pipeline tests, either because of a missing checkpoint or because a tiny
             # config could not be created.
@@ -229,8 +234,7 @@ class CTRLModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
     def tearDown(self):
         super().tearDown()
         # clean-up as much as possible GPU memory occupied by PyTorch
-        gc.collect()
-        backend_empty_cache(torch_device)
+        cleanup(torch_device)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -245,13 +249,9 @@ class CTRLModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in CTRL_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = CTRLModel.from_pretrained(model_name)
-            self.assertIsNotNone(model)
-
-    @unittest.skip("The model doesn't support left padding")  # and it's not used enough to be worth fixing :)
-    def test_left_padding_compatibility(self):
-        pass
+        model_name = "Salesforce/ctrl"
+        model = CTRLModel.from_pretrained(model_name)
+        self.assertIsNotNone(model)
 
 
 @require_torch
@@ -259,8 +259,7 @@ class CTRLModelLanguageGenerationTest(unittest.TestCase):
     def tearDown(self):
         super().tearDown()
         # clean-up as much as possible GPU memory occupied by PyTorch
-        gc.collect()
-        backend_empty_cache(torch_device)
+        cleanup(torch_device, gc_collect=True)
 
     @slow
     def test_lm_generate_ctrl(self):

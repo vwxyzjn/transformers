@@ -84,7 +84,6 @@ class FlaxWhisperModelTester:
         decoder_start_token_id=85,
         num_conv_layers=1,
         suppress_tokens=None,
-        begin_suppress_tokens=None,
     ):
         self.parent = parent
         self.batch_size = batch_size
@@ -118,7 +117,6 @@ class FlaxWhisperModelTester:
         self.decoder_start_token_id = decoder_start_token_id
         self.num_conv_layers = num_conv_layers
         self.suppress_tokens = suppress_tokens
-        self.begin_suppress_tokens = begin_suppress_tokens
 
     def prepare_config_and_inputs_for_common(self):
         input_features = floats_tensor([self.batch_size, self.num_mel_bins, self.seq_length], self.vocab_size)
@@ -147,7 +145,6 @@ class FlaxWhisperModelTester:
             encoder_ffn_dim=self.encoder_ffn_dim,
             encoder_layers=self.encoder_layers,
             suppress_tokens=self.suppress_tokens,
-            begin_suppress_tokens=self.begin_suppress_tokens,
         )
         inputs_dict = prepare_whisper_inputs_dict(config, input_features, decoder_input_ids)
         return config, inputs_dict
@@ -561,7 +558,7 @@ class FlaxWhisperModelIntegrationTest(unittest.TestCase):
         processor = WhisperProcessor.from_pretrained("openai/whisper-large")
         model = FlaxWhisperForConditionalGeneration.from_pretrained("openai/whisper-large", from_pt=True)
 
-        ds = load_dataset("common_voice", "ja", split="test", streaming=True)
+        ds = load_dataset("legacy-datasets/common_voice", "ja", split="test", streaming=True, trust_remote_code=True)
         ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16_000))
         input_speech = next(iter(ds))["audio"]["array"]
         input_features = processor.feature_extractor(raw_speech=input_speech, return_tensors="np")
@@ -670,9 +667,7 @@ class FlaxWhisperModelIntegrationTest(unittest.TestCase):
 
         generated_ids = generate_fn(input_features)
 
-        # fmt: off
-        EXPECTED_OUTPUT = np.array([50258, 50259, 50359, 50364, 2221, 13, 2326, 388, 391, 307, 264, 50244, 295, 264, 2808, 5359, 11, 293, 321, 366, 5404, 281, 2928, 702, 14943, 13, 50692, 50692, 6966, 307, 2221, 13, 2326, 388, 391, 311, 9060, 1570, 1880, 813, 702, 1871, 13, 50926, 50926, 634, 5112, 505, 300, 412, 341, 42729, 3196, 295, 264, 1064, 11, 365, 5272, 293, 12904, 9256, 450, 10539, 51208, 51208, 949, 505, 11, 14138, 10117, 490, 3936, 293, 1080, 3542, 5160, 881, 26336, 281, 264, 1575, 13, 51552, 51552, 634, 575, 12525, 22618, 1968, 6144, 35617, 7354, 1292, 6, 589, 307, 534, 10281, 934, 439, 11, 293, 51836, 51836, 50257])
-        # fmt: on
+        EXPECTED_OUTPUT = np.array([50258, 50259, 50359, 50364, 2221, 13, 2326, 388, 391, 307, 264, 50244, 295, 264, 2808, 5359, 11, 293, 321, 366, 5404, 281, 2928, 702, 14943, 13, 50692, 50692, 6966, 307, 2221, 13, 2326, 388, 391, 311, 9060, 1570, 1880, 813, 702, 1871, 13, 50926, 50926, 634, 5112, 505, 300, 412, 341, 42729, 3196, 295, 264, 1064, 11, 365, 5272, 293, 12904, 9256, 450, 10539, 51208, 51208, 949, 505, 11, 14138, 10117, 490, 3936, 293, 1080, 3542, 5160, 881, 26336, 281, 264, 1575, 13, 51552, 51552, 634, 575, 12525, 22618, 1968, 6144, 35617, 7354, 1292, 6, 589, 307, 534, 10281, 934, 439, 11, 293, 51836, 51836, 50257])  # fmt: skip
 
         self.assertTrue(np.allclose(generated_ids, EXPECTED_OUTPUT))
 
@@ -743,7 +738,6 @@ class FlaxWhisperEncoderModelTester:
         num_mel_bins=80,
         num_conv_layers=1,
         suppress_tokens=None,
-        begin_suppress_tokens=None,
         classifier_proj_size=4,
         num_labels=2,
         is_encoder_decoder=False,
@@ -766,7 +760,6 @@ class FlaxWhisperEncoderModelTester:
         self.max_source_positions = max_source_positions
         self.num_conv_layers = num_conv_layers
         self.suppress_tokens = suppress_tokens
-        self.begin_suppress_tokens = begin_suppress_tokens
         self.classifier_proj_size = classifier_proj_size
         self.num_labels = num_labels
         self.is_encoder_decoder = is_encoder_decoder
@@ -787,7 +780,6 @@ class FlaxWhisperEncoderModelTester:
             decoder_ffn_dim=self.hidden_size,
             encoder_ffn_dim=self.hidden_size,
             suppress_tokens=self.suppress_tokens,
-            begin_suppress_tokens=self.begin_suppress_tokens,
             classifier_proj_size=self.classifier_proj_size,
             num_labels=self.num_labels,
             is_encoder_decoder=self.is_encoder_decoder,

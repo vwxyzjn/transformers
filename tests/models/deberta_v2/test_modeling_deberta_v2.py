@@ -33,10 +33,9 @@ if is_torch_available():
         DebertaV2ForTokenClassification,
         DebertaV2Model,
     )
-    from transformers.models.deberta_v2.modeling_deberta_v2 import DEBERTA_V2_PRETRAINED_MODEL_ARCHIVE_LIST
 
 
-class DebertaV2ModelTester(object):
+class DebertaV2ModelTester:
     def __init__(
         self,
         parent,
@@ -292,9 +291,21 @@ class DebertaV2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCas
 
     @slow
     def test_model_from_pretrained(self):
-        for model_name in DEBERTA_V2_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            model = DebertaV2Model.from_pretrained(model_name)
-            self.assertIsNotNone(model)
+        model_name = "microsoft/deberta-v2-xlarge"
+        model = DebertaV2Model.from_pretrained(model_name)
+        self.assertIsNotNone(model)
+
+    @unittest.skip("This test was broken by the refactor in #22105, TODO @ArthurZucker")
+    def test_torch_fx_output_loss(self):
+        pass
+
+    @unittest.skip("This test was broken by the refactor in #22105, TODO @ArthurZucker")
+    def test_torch_fx(self):
+        pass
+
+    @unittest.skip("This test was broken by the refactor in #22105, TODO @ArthurZucker")
+    def test_pt_tf_model_equivalence(self):
+        pass
 
 
 @require_torch

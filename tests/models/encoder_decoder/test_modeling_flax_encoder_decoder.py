@@ -297,7 +297,7 @@ class FlaxEncoderDecoderMixin:
 
         # prepare inputs
         flax_inputs = inputs_dict
-        pt_inputs = {k: torch.tensor(v.tolist()) for k, v in flax_inputs.items()}
+        pt_inputs = {k: torch.tensor(v.tolist()).to(torch_device) for k, v in flax_inputs.items()}
 
         with torch.no_grad():
             pt_outputs = pt_model(**pt_inputs).to_tuple()
@@ -305,7 +305,7 @@ class FlaxEncoderDecoderMixin:
         fx_outputs = fx_model(**inputs_dict).to_tuple()
         self.assertEqual(len(fx_outputs), len(pt_outputs), "Output lengths differ between Flax and PyTorch")
         for fx_output, pt_output in zip(fx_outputs, pt_outputs):
-            self.assert_almost_equals(fx_output, pt_output.numpy(), 1e-5)
+            self.assert_almost_equals(fx_output, pt_output.numpy(force=True), 1e-5)
 
         # PT -> Flax
         with tempfile.TemporaryDirectory() as tmpdirname:
@@ -315,7 +315,7 @@ class FlaxEncoderDecoderMixin:
         fx_outputs_loaded = fx_model_loaded(**inputs_dict).to_tuple()
         self.assertEqual(len(fx_outputs_loaded), len(pt_outputs), "Output lengths differ between Flax and PyTorch")
         for fx_output_loaded, pt_output in zip(fx_outputs_loaded, pt_outputs):
-            self.assert_almost_equals(fx_output_loaded, pt_output.numpy(), 1e-5)
+            self.assert_almost_equals(fx_output_loaded, pt_output.numpy(force=True), 1e-5)
 
         # Flax -> PT
         with tempfile.TemporaryDirectory() as tmpdirname:
@@ -330,7 +330,7 @@ class FlaxEncoderDecoderMixin:
 
         self.assertEqual(len(fx_outputs), len(pt_outputs_loaded), "Output lengths differ between Flax and PyTorch")
         for fx_output, pt_output_loaded in zip(fx_outputs, pt_outputs_loaded):
-            self.assert_almost_equals(fx_output, pt_output_loaded.numpy(), 1e-5)
+            self.assert_almost_equals(fx_output, pt_output_loaded.numpy(force=True), 1e-5)
 
     def check_equivalence_pt_to_flax(self, config, decoder_config, inputs_dict):
         encoder_decoder_config = EncoderDecoderConfig.from_encoder_decoder_configs(config, decoder_config)
@@ -483,12 +483,14 @@ class FlaxGPT2EncoderDecoderModelTest(FlaxEncoderDecoderMixin, unittest.TestCase
         }
 
     def get_pretrained_model(self):
-        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained("bert-base-cased", "gpt2")
+        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained(
+            "google-bert/bert-base-cased", "openai-community/gpt2"
+        )
 
     @slow
     def test_bert2gpt2_summarization(self):
-        tokenizer_in = AutoTokenizer.from_pretrained("bert-base-cased")
-        tokenizer_out = AutoTokenizer.from_pretrained("gpt2")
+        tokenizer_in = AutoTokenizer.from_pretrained("google-bert/bert-base-cased")
+        tokenizer_out = AutoTokenizer.from_pretrained("openai-community/gpt2")
 
         model = FlaxEncoderDecoderModel.from_pretrained(
             "patrickvonplaten/bert2gpt2-cnn_dailymail-fp16", pad_token_id=tokenizer_out.eos_token_id
@@ -539,7 +541,9 @@ class FlaxBartEncoderDecoderModelTest(FlaxEncoderDecoderMixin, unittest.TestCase
         }
 
     def get_pretrained_model(self):
-        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained("bert-base-cased", "facebook/bart-base")
+        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained(
+            "google-bert/bert-base-cased", "facebook/bart-base"
+        )
 
 
 @require_flax
@@ -576,13 +580,17 @@ class FlaxBertEncoderDecoderModelTest(FlaxEncoderDecoderMixin, unittest.TestCase
         }
 
     def get_pretrained_model(self):
-        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained("bert-base-cased", "bert-base-cased")
+        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained(
+            "google-bert/bert-base-cased", "google-bert/bert-base-cased"
+        )
 
 
 @require_flax
 class FlaxEncoderDecoderModelTest(unittest.TestCase):
     def get_from_encoderdecoder_pretrained_model(self):
-        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained("bert-base-cased", "gpt2")
+        return FlaxEncoderDecoderModel.from_encoder_decoder_pretrained(
+            "google-bert/bert-base-cased", "openai-community/gpt2"
+        )
 
     def _check_configuration_tie(self, model):
         module = model.module.bind(model.params)

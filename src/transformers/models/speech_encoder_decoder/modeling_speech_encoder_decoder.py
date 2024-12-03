@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Classes to support Speech-Encoder-Text-Decoder architectures"""
-
+"""Classes to support Speech-Encoder-Text-Decoder architectures"""
 
 from typing import Optional, Tuple, Union
 
@@ -22,6 +21,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from ...configuration_utils import PretrainedConfig
+from ...generation import GenerationMixin
 from ...modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
 from ...modeling_utils import PreTrainedModel
 from ...utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
@@ -170,17 +170,21 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start
 
 
 @add_start_docstrings(SPEECH_ENCODER_DECODER_START_DOCSTRING)
-class SpeechEncoderDecoderModel(PreTrainedModel):
+class SpeechEncoderDecoderModel(PreTrainedModel, GenerationMixin):
     r"""
     [`SpeechEncoderDecoderModel`] is a generic model class that will be instantiated as a transformer architecture with
     one of the base model classes of the library as encoder and another one as decoder when created with the
     :meth*~transformers.AutoModel.from_pretrained* class method for the encoder and
     :meth*~transformers.AutoModelForCausalLM.from_pretrained* class method for the decoder.
     """
+
     config_class = SpeechEncoderDecoderConfig
     base_model_prefix = "speech_encoder_decoder"
     main_input_name = "inputs"
     supports_gradient_checkpointing = True
+    _supports_param_buffer_assignment = False
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
 
     def __init__(
         self,
@@ -232,6 +236,8 @@ class SpeechEncoderDecoderModel(PreTrainedModel):
 
         # make sure that the individual model's config refers to the shared config
         # so that the updates to the config will be synced
+        self.config.encoder._attn_implementation = self.encoder.config._attn_implementation
+        self.config.decoder._attn_implementation = self.decoder.config._attn_implementation
         self.encoder.config = self.config.encoder
         self.decoder.config = self.config.decoder
 
@@ -300,8 +306,6 @@ class SpeechEncoderDecoderModel(PreTrainedModel):
                 Information necessary to initiate the encoder. Can be either:
 
                     - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
-                      Valid model ids can be located at the root-level, like `bert-base-uncased`, or namespaced under a
-                      user or organization name, like `dbmdz/bert-base-german-cased`.
                     - A path to a *directory* containing model weights saved using
                       [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
                     - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
@@ -313,8 +317,6 @@ class SpeechEncoderDecoderModel(PreTrainedModel):
                 Information necessary to initiate the decoder. Can be either:
 
                     - A string, the *model id* of a pretrained model hosted inside a model repo on huggingface.co.
-                      Valid model ids can be located at the root-level, like `bert-base-uncased`, or namespaced under a
-                      user or organization name, like `dbmdz/bert-base-german-cased`.
                     - A path to a *directory* containing model weights saved using
                       [`~PreTrainedModel.save_pretrained`], e.g., `./my_model_directory/`.
                     - A path or url to a *tensorflow index checkpoint file* (e.g, `./tf_model/model.ckpt.index`). In
@@ -342,7 +344,7 @@ class SpeechEncoderDecoderModel(PreTrainedModel):
 
         >>> # initialize a wav2vec2bert from a pretrained Wav2Vec2 and a pretrained BERT model. Note that the cross-attention layers will be randomly initialized
         >>> model = SpeechEncoderDecoderModel.from_encoder_decoder_pretrained(
-        ...     "facebook/wav2vec2-base-960h", "bert-base-uncased"
+        ...     "facebook/wav2vec2-base-960h", "google-bert/bert-base-uncased"
         ... )
         >>> # saving model after fine-tuning
         >>> model.save_pretrained("./wav2vec2bert")
@@ -576,21 +578,6 @@ class SpeechEncoderDecoderModel(PreTrainedModel):
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, use_cache=None, encoder_outputs=None, **kwargs
-    ):
-        decoder_inputs = self.decoder.prepare_inputs_for_generation(input_ids, past_key_values=past_key_values)
-        decoder_attention_mask = decoder_inputs["attention_mask"] if "attention_mask" in decoder_inputs else None
-        input_dict = {
-            "attention_mask": attention_mask,
-            "decoder_attention_mask": decoder_attention_mask,
-            "decoder_input_ids": decoder_inputs["input_ids"],
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": decoder_inputs["past_key_values"],
-            "use_cache": use_cache,
-        }
-        return input_dict
 
     def resize_token_embeddings(self, *args, **kwargs):
         raise NotImplementedError(
