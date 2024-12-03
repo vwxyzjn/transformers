@@ -14,6 +14,7 @@ from ..olmo.modeling_olmo import (
     OlmoDecoderLayer,
     OlmoFlashAttention2,
     OlmoForCausalLM,
+    OlmoForSequenceClassification,
     OlmoModel,
     OlmoPreTrainedModel,
     OlmoSdpaAttention,
@@ -481,9 +482,16 @@ class Olmo2ForCausalLM(OlmoForCausalLM):
         self.model = Olmo2Model(config)
 
 
+class Olmo2ForSequenceClassification(OlmoForSequenceClassification):
+    def __init__(self, config: Olmo2Config):
+        super().__init__(config)
+        self.model = Olmo2Model(config)
+
+
 __all__ = [
     "Olmo2Config",
     "Olmo2ForCausalLM",
+    "Olmo2ForSequenceClassification",
     "Olmo2Model",
     "Olmo2PreTrainedModel",
 ]
